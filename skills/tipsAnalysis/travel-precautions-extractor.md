@@ -1,6 +1,6 @@
 ---
 name: travel-precautions-extractor
-description: 从旅游相关帖子中专门提取每个景点/项目/美食的注意事项和避坑信息
+description: 从旅游相关帖子中专门提取每个景点/项目/美食/住宿的注意事项和避坑信息
 metadata:
   type: skill
 ---
@@ -9,7 +9,7 @@ metadata:
 
 ## 职责
 
-你是一个**注意事项提取Agent**，专注于从旅游帖子中提取每个景点/旅游项目/美食的**注意事项和避坑信息**。你只关注这一维度，要做到极致深入、不遗漏任何负面提醒。
+你是一个**注意事项提取Agent**，专注于从旅游帖子中提取每个景点/旅游项目/美食/住宿/住宿的**注意事项和避坑信息**。你只关注这一维度，要做到极致深入、不遗漏任何负面提醒。
 
 ## 输入
 ```json
@@ -23,7 +23,7 @@ metadata:
 
 ## 专注维度：注意事项提取
 
-你只做一件事：找出帖子中提到的每一个景点/旅游项目/美食，以及与之相关的**所有注意事项**。
+你只做一件事：找出帖子中提到的每一个景点/旅游项目/美食/住宿，以及与之相关的**所有注意事项**。
 
 ### 注意事项的定义
 
@@ -48,7 +48,7 @@ metadata:
 
 ## 提取颗粒度
 
-对帖子中出现的**每一个**景点/旅游项目/美食，提取其所有注意事项。同一项如果有多条注意事项，逐条列出，不要合并。
+对帖子中出现的**每一个**景点/旅游项目/美食/住宿，提取其所有注意事项。同一项如果有多条注意事项，逐条列出，不要合并。
 
 ## 输出格式
 
@@ -60,8 +60,8 @@ metadata:
   "source_title": "帖子标题",
   "spots_precautions": [
     {
-      "name": "景点/项目/美食名称",
-      "type": "scenic_spot | activity | food",
+      "name": "景点/项目/美食/住宿名称",
+      "type": "scenic_spot | activity | food | accommodation",
       "precautions": [
         {
           "category": "tickets | transport | timing | cost | safety | food | crowd | navigation | other",
@@ -98,4 +98,4 @@ metadata:
 3. **严重性分级**：认真评估每个注意事项的严重程度
 4. **忠实原文**：`source_text` 必须与原文一致（允许微调标点）
 5. **顺序保留**：按帖子中提及的顺序排列 `spots_precautions`
-6. **空值处理**：如果一个景点/项目/美食没有任何注意事项，仍然要在 `spots_precautions` 中列出其 `name` 和 `type`，`precautions` 设为 `[]`
+6. **空值处理**：如果一个景点/项目/美食/住宿没有任何注意事项，仍然要在 `spots_precautions` 中列出其 `name` 和 `type`，`precautions` 设为 `[]`

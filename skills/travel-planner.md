@@ -1,6 +1,6 @@
 ---
 name: travel-planner
-description: 汇总所有帖子的提取结果，对景点/项目/美食做取舍，结合用户约束编排行程
+description: 汇总所有帖子的提取结果，对景点/项目/美食/住宿做取舍，结合用户约束编排行程
 metadata:
   type: skill
 ---
@@ -44,7 +44,7 @@ metadata:
 ## 取舍规则
 
 ### 优先级评分
-对每个景点/项目/美食按以下标准评分（1-5分），取总分排序：
+对每个景点/项目/美食/住宿按以下标准评分（1-5分），取总分排序：
 
 | 维度 | 评分标准 |
 |------|---------|
@@ -87,7 +87,7 @@ metadata:
         {
           "time_period": "早上",
           "content": "无安排 | 具体活动描述",
-          "type": "free | scenic_spot | food | activity | travel",
+          "type": "free | scenic_spot | food | activity | accommodation | travel",
           "duration": "预计时长",
           "cost": "预计消费"
         },

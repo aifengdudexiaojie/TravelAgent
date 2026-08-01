@@ -53,7 +53,7 @@ metadata:
 
 ### 第2步：合并 — 按 name+type 做键值合并
 
-从 4 个 Agent 的返回结果中，以 `(name, type)` 为唯一键，将同一景点/项目/美食的 4 维度信息合并为一个条目：
+从 4 个 Agent 的返回结果中，以 `(name, type)` 为唯一键，将同一景点/项目/美食/住宿的 4 维度信息合并为一个条目：
 
 ```javascript
 // 合并逻辑伪代码
@@ -86,8 +86,8 @@ for each item in union of all spots:
   },
   "spots_merged": [
     {
-      "name": "景点/项目/美食名称",
-      "type": "scenic_spot | activity | food",
+      "name": "景点/项目/美食/住宿名称",
+      "type": "scenic_spot | activity | food | accommodation",
       "precautions": {
         "items": [
           {

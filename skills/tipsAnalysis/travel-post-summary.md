@@ -15,23 +15,28 @@ metadata:
 
 ## 输入
 
+接收**同一个地点**下多篇帖子的单帖总结集合，格式如下：
+
 ```json
 {
   "task_id": "数据库任务ID",
   "location": "地点名称（如 成都 / 宜兴）",
-  "posts_analysis": [
+  "posts_summaries": [
     {
       "source_title": "帖子1标题",
+      "post_summary": "帖子1的一句话概括",
       "spots": [
         {
-          "name": "景点/项目/美食名称",
-          "type": "scenic_spot | activity | food",
-          "summary": "该帖子对该景点的描述总结",
-          "cost": "费用信息（如 80元/人、免费）",
-          "duration": "游玩时长",
-          "precautions": "注意事项"
+          "name": "景点/项目/美食/住宿名称",
+          "type": "scenic_spot | activity | food | accommodation",
+          "summary": "综合总结",
+          "cost": "费用",
+          "duration": "时长",
+          "precautions": ["注意事项"]
         }
-      ]
+      ],
+      "overall_rating": "positive | neutral | mixed | negative",
+      "worth_following": true | false
     },
     {
       "source_title": "帖子2标题",
@@ -41,9 +46,11 @@ metadata:
 }
 ```
 
+> 输入是 `single-travel-summary.md`（单帖总结）输出的数组集合。
+
 ## 职责
 
-对输入中**所有帖子**提到的景点/项目/美食做：
+对输入中**所有帖子**提到的景点/项目/美食/住宿做：
 
 ### 1. 汇总去重
 - 多篇帖子提到的**同一景点** → 合并为一个条目
@@ -78,8 +85,8 @@ metadata:
   },
   "spots": [
     {
-      "name": "景点/项目/美食名称",
-      "type": "scenic_spot | activity | food",
+      "name": "景点/项目/美食/住宿名称",
+      "type": "scenic_spot | activity | food | accommodation",
       "summary": "综合总结（30-80字，基于所有相关帖子的信息）",
       "cost": "费用区间（如'60-80元/人'、'免费'）",
       "duration": "游玩时长（如'2-3小时'）",
@@ -105,7 +112,7 @@ metadata:
 | 字段 | 规则 |
 |------|------|
 | `location_summary.must_visit` | 至少 2 个，按推荐热度排序 |
-| `spots` | 所有帖子提及的景点/项目/美食**全部列出**，合并去重后逐条输出 |
+| `spots` | 所有帖子提及的景点/项目/美食/住宿**全部列出**，合并去重后逐条输出 |
 | `spots[].mention_count` | 数字，该景点被多少篇帖子提及（≥2 表示有共识） |
 | `spots[].cost` | 合并所有帖子的费用信息，取区间；只有一篇提到就直接用 |
 | `spots[].precautions` | 合并所有帖子的注意事项，去重 |

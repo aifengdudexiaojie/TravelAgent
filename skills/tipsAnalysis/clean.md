@@ -31,7 +31,7 @@ metadata:
 
 ### 1. 合并依据
 
-所有维度的 `spots_*` 数组按 **`name`（景点/项目/美食名称）** 进行关联合并。名称不完全一致时，进行模糊匹配：
+所有维度的 `spots_*` 数组按 **`name`（景点/项目/美食/住宿名称）** 进行关联合并。名称不完全一致时，进行模糊匹配：
 - "宜兴竹海" 和 "竹海景区" → 视为同一项
 - "陈麻婆" 和 "陈麻婆豆腐" → 视为同一项
 
@@ -64,8 +64,8 @@ metadata:
   "source_title": "帖子标题",
   "merged_spots": [
     {
-      "name": "景点/项目/美食名称",
-      "type": "scenic_spot | activity | food",
+      "name": "景点/项目/美食/住宿名称",
+      "type": "scenic_spot | activity | food | accommodation",
       "summary": "对该项的最终总结（合并后，20-80字）",
       "cost": {
         "total_min": 最低消费（数字或null）,

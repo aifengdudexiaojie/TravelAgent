@@ -1,6 +1,6 @@
 ---
 name: travel-cost-estimator
-description: 从旅游相关帖子中提取每个景点/项目/美食的消费信息及费用构成
+description: 从旅游相关帖子中提取每个景点/项目/美食/住宿的消费信息及费用构成
 metadata:
   type: skill
 ---
@@ -9,7 +9,7 @@ metadata:
 
 ## 职责
 
-你是一个**消费预估Agent**，专注于从旅游帖子中提取每个景点/旅游项目/美食的**费用信息**，包括门票、人均消费、隐性支出等。精确的消费预估直接影响预算规划的可靠性。
+你是一个**消费预估Agent**，专注于从旅游帖子中提取每个景点/旅游项目/美食/住宿/住宿的**费用信息**，包括门票、人均消费、隐性支出等。精确的消费预估直接影响预算规划的可靠性。
 
 ## 输入
 
@@ -24,7 +24,7 @@ metadata:
 
 ## 专注维度：消费预估
 
-你只做一件事：对帖子中提到的**每一个**景点/旅游项目/美食，提取所有与费用相关的信息。
+你只做一件事：对帖子中提到的**每一个**景点/旅游项目/美食/住宿，提取所有与费用相关的信息。
 
 ### 消费信息类型
 
@@ -74,8 +74,8 @@ metadata:
   "source_title": "帖子标题",
   "spots_cost": [
     {
-      "name": "景点/项目/美食名称",
-      "type": "scenic_spot | activity | food",
+      "name": "景点/项目/美食/住宿名称",
+      "type": "scenic_spot | activity | food | accommodation",
       "cost": {
         "summary": "费用概述（如'门票80元，内部体验另收费'）",
         "total_min": "最低消费金额（数字，没有填null）",
@@ -146,4 +146,4 @@ metadata:
 5. **费用构成**：尽可能将总花费拆解到 `cost_breakdown` 的各子项中
 6. **省钱建议**：`money_saving_tips` 和 `budget_tips` 必须基于原文信息，不编造
 7. **顺序保留**：按帖子中提及的顺序排列 `spots_cost`
-8. **空值处理**：完全没有消费信息的景点/项目/美食，`cost.confidence` 设为 `"unknown"`，`cost.total_min` 和 `total_max` 为 `null`
+8. **空值处理**：完全没有消费信息的景点/项目/美食/住宿，`cost.confidence` 设为 `"unknown"`，`cost.total_min` 和 `total_max` 为 `null`

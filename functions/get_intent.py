@@ -2,8 +2,10 @@
 
 import json
 import time
+import random
 from typing import AsyncIterator
 from agents.tips_agent import GeneralAgent
+from utils.redis_storage import RedisMemory
 from utils.toJson import to_json, clean_intent
 
 
@@ -41,13 +43,15 @@ async def get_user_intent_stream(input_text: str) -> AsyncIterator[str]:
 # ================================================================
 
 
-async def get_user_intent(input_text: str) -> dict:
+async def get_user_intent(input_text: str, redis: RedisMemory ) -> dict:
     """
     正常输出
     """
     try:
+        task_id = random.randint(0, 10000)
         intent_agent = GeneralAgent("deepseek", "Intent")
-        messages = [{"role": "user", "content": input_text}]
+        input_msg = f"'task_id':{task_id}, 'input':{input_text}"
+        messages = [{"role": "user", "content": input_msg}]
 
         json_response = await intent_agent.chat(messages)
         if not json_response or not json_response.strip():
@@ -55,8 +59,9 @@ async def get_user_intent(input_text: str) -> dict:
 
         try:
             tojson = json.loads(json_response)
-            # 将查询内容交给保存 并进行数据库存档
-
+            # 将查询内容交给保存 并进行数据库存档 暂时先将流程跑通 暂时仅将内容存入redis 随机生成任务号存入redis中
+            # task_id 随机生成 location intent用于表示是前期的意图识别 note_id 0 content toJson
+            redis.add_message(task_id, "intent", 0, tojson)
             parsed = clean_intent(tojson)
             if isinstance(parsed, dict):
                 return parsed

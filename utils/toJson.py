@@ -98,7 +98,7 @@ def clean_intent(data: dict) -> dict:
       - 无 intent 包裹：{"location": [...], "days": "3天", ...}
     """
     source = data.get("intent", data)
-
+    task_id = data.get("task_id", data)
     fields = [
         ("locations", ["location"], ["未知"]),
         ("days", ["time", "duration"], "2天"),
@@ -133,5 +133,6 @@ def clean_intent(data: dict) -> dict:
             value = f"{int(value)}天"
 
         result[target_key] = value
+        result["task_id"] = task_id
 
     return result

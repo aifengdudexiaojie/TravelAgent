@@ -22,7 +22,13 @@ async def main():
     print("\n=== 完成 ===")
     parsed = to_json(res)
     query_list = parsed["expand_query"]
-    print(query_list)
+    # 提取地点（兼容 intent 包裹 / 扁平 / locations / location）
+    intent = parsed.get("intent", parsed)
+    location = intent.get("locations") or intent.get("location")
+    if isinstance(location, list):
+        location = location[0]
+    location = location or "未知"
+    print(f"查询词: {query_list}, 地点: {location}")
     # 测试中间过程
     task_id = random.randint(0, 10000)
     ifLogin = show_status()
@@ -99,7 +105,7 @@ async def main():
             clean_msg = [{"role": "user", "content": clean_context}]
             cleanAgent = GeneralAgent("deepseek", "tipsAnalysis/clean.md")
             clean_res = await cleanAgent.chat(clean_msg)
-            redis.add_message(task_id=task_id, note_id=f["id"], content=clean_res)
+            redis.add_message(task_id=task_id, location=location, note_id=f["id"], content=clean_res)
 
             travel_summarizer_agent = GeneralAgent("deepseek", "travel-summarizer.md")
             f_travel_msg = [{"role": "user", "content": clean_res}]

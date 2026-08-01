@@ -3,9 +3,14 @@ from typing import List
 
 from fastapi import APIRouter
 from pydantic import BaseModel
-
+from fastapi import Depends
 from functions.get_intent import get_user_intent
+from utils.redis_storage import RedisMemory
 from utils.toJson import clean_intent
+
+
+def get_redis():
+    return RedisMemory()
 
 router = APIRouter(prefix="/api/intent", tags=["意图识别"])
 
@@ -28,11 +33,11 @@ class IntentResponse(BaseModel):
 
 
 @router.post("/recognize", response_model=IntentResponse)
-async def recognize_intent(req: IntentRequest):
+async def recognize_intent(req: IntentRequest, redis: RedisMemory = Depends(get_redis)):
     """
     识别用户旅行意图（非流式，一次输出完整结果）
 
     AI 返回 → clean_intent 去多余字段 → IntentResponse 校验 → 返回前端
     """
-    cleaned = await get_user_intent(req.query)
+    cleaned = await get_user_intent(req.query, redis)
     return IntentResponse(**cleaned)

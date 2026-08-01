@@ -9,7 +9,7 @@ metadata:
 
 ## 职责
 
-你是一个**意图识别Agent**，负责解析用户的自然语言输入，提取与旅游计划相关的结构化信息。你是整个旅游 Agent 工作流的**第一入口**。
+你是一个**意图识别Agent**，负责解析用户的自然语言输入，提取与旅游计划相关的结构化信息。你是整个旅游 Agent 工作流的**第一入口**。对输入中的input中内容进行识别处理。
 
 ## 输入
 
@@ -151,6 +151,7 @@ metadata:
 
 ```json
 {
+  "task_id": "由外部传入",
   "intent": {
     "location": ["目的地1", "目的地2"],
     "days": "天数（数字 | null）",
@@ -180,6 +181,7 @@ metadata:
 **输出**：
 ```json
 {
+  "task_id": "由外部传入",
   "intent": {
     "location": ["宜兴", "宣城"],
     "days": 4,
@@ -205,6 +207,7 @@ metadata:
 **输出**：
 ```json
 {
+  "task_id": "由外部传入",
   "intent": {
     "locations": ["上海"],
     "days": null,
@@ -230,6 +233,7 @@ metadata:
 **输出**：
 ```json
 {
+  "task_id": "由外部传入",
   "intent": {
     "location": null,
     "days": 2,
@@ -255,6 +259,7 @@ metadata:
 **输出**：
 ```json
 {
+  "task_id": "由外部传入",
   "intent": {
     "location": ["北京"],
     "days": 5,

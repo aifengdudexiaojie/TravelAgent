@@ -6,8 +6,8 @@ from utils.redis_storage import RedisMemory
 from utils.toJson import to_json
 import random
 
-
-async def analyze_notes(query: str, limit: int, redis: RedisMemory):
+# 用于分析单个地点的旅游攻略
+async def analyze_notes(query: str, location: str, limit: int, redis: RedisMemory):
     # 首先检查登录状态
     ifLogin = show_status()
     if not ifLogin:
@@ -16,9 +16,9 @@ async def analyze_notes(query: str, limit: int, redis: RedisMemory):
     task_id = random.randint(0, 10000)
 
     # 根据query进行mcp查询所有帖子
-    feeds =  search_notes(query, limit)
+    feeds = search_notes(query, limit)
 
-    travel_res_list = []
+    all_notes_list = []
     img_notes = []
     # 根据feeds中的内容做循环处理
     for i, f in enumerate(feeds):
@@ -88,17 +88,24 @@ async def analyze_notes(query: str, limit: int, redis: RedisMemory):
                 "precautions": precautions_res,
                 "duration": duration_res,
             }
-            # clean_context = f" 'task_id':{task_id}, 'title':{title}, 'raw_inputs':{raw_inputs}"
+            raw_inputs = f" 'task_id':{task_id}, 'title':{title}, 'raw_inputs':{raw_inputs}"
             # clean_msg = [{"role": "user", "content": clean_context}]
             # cleanAgent = GeneralAgent("deepseek", "tipsAnalysis/clean.md")
             # clean_res = await cleanAgent.chat(clean_msg)
             # 将每一轮的内容放到redis中
-            travel_summarizer_agent = GeneralAgent("deepseek", "travel-summarizer.md")
+            travel_summarizer_agent = GeneralAgent("deepseek", "tipsAnalysis/single-travel-summary.md")
             f_travel_msg = [{"role": "user", "content": raw_inputs}]
-            f_travel_res = await travel_summarizer_agent.chat(f_travel_msg)
-            travel_res_list.append(f_travel_res)
-
+            single_travel_res = await travel_summarizer_agent.chat(f_travel_msg)
+            # 将总结内容存入到redis中
+            redis.add_message(task_id=task_id, location=location, note_id=f["id"], content=single_travel_res)
+            all_notes_list.append(single_travel_res)
         else:
             return "返回内容格式错误"
+    # 对所有帖子进行总结
+    all_notes_input = f"'task_id':{task_id},'location':{location},'posts_summaries':{all_notes_list} "
+    all_notes_agent = GeneralAgent("deepseek", "tipsAnalysis/travel-post-summary.md")
+    f_notes_msg = [{"role": "user", "content": all_notes_input}]
+    f_post_res = await all_notes_agent.chat(f_notes_msg)
 
-    return None
+    # 返回 img_notes 用于后续的图像LLM识别
+    return f_post_res, img_notes

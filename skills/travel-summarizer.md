@@ -26,7 +26,7 @@ metadata:
 ## 工作流程
 
 ### 第1步：数据整合与去重
-- 将多个帖子中反复提及的景点/美食合并（保留最全的信息版本）
+- 将多个帖子中反复提及的景点/美食/住宿合并（保留最全的信息版本）
 - 标注被多次推荐的项为"🔥 多人推荐"
 - 提取所有"注意事项/避坑"汇总到独立区域
 
@@ -40,9 +40,9 @@ metadata:
 
 #### ① 每日行程总览（核心）
 - 按天展示，每半天一个活动块
-- 每个活动标注：类型（景点/美食/项目）、时长、消费
+- 每个活动标注：类型（景点/美食/住宿/项目）、时长、消费
 
-#### ② 景点/项目详解
+#### ② 景点/项目/住宿详解
 - 按地点分组列出所有精选景点/项目
 - 每个包含：总结、注意事项、参考时长、参考消费、出处（引用帖子）
 
@@ -87,7 +87,7 @@ metadata:
         {
           "period": "早上",
           "content": "活动描述",
-          "type": "free | scenic_spot | food | activity | travel",
+          "type": "free | scenic_spot | food | activity | accommodation | travel",
           "detail": {
             "name": "具体名称",
             "summary": "简要说明",
@@ -102,8 +102,8 @@ metadata:
   },
   "spots_catalog": [
     {
-      "name": "景点/项目名称",
-      "type": "scenic_spot | activity",
+      "name": "景点/项目/住宿名称",
+      "type": "scenic_spot | activity | accommodation",
       "location_group": "所属地点",
       "summary": "综合总结（50-150字）",
       "highlights": ["亮点1", "亮点2"],
