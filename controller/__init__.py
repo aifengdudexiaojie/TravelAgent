@@ -3,7 +3,9 @@
 from fastapi import APIRouter
 
 from .intent_routes import router as intent_router
+from .summary_routes import router as summary_router
 
 # 主路由：汇聚所有子路由
 api_router = APIRouter()
 api_router.include_router(intent_router)
+api_router.include_router(summary_router)

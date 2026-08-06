@@ -26,6 +26,15 @@ metadata:
 
 你只做一件事：对帖子中提到的**每一个**景点/旅游项目/美食/住宿，撰写**有信息量的总结**，并对整帖做**汇总概述**。
 
+## 地理位置获取（重要）
+
+每个景点/项目/美食/住宿必须附带**经纬度坐标**，用于后续多地点规划。
+
+- 使用 `get_location` 工具获取：传入 `address`（景点/场所名称）和 `city`（所在城市）
+- 工具返回 `{"lng": 经度, "lat": 纬度}`
+- **每个地点独立调用一次**，不要编造坐标
+- 工具调用失败或返回错误 → `coordinates` 填 `null`，不要编造
+
 ### 总结的质量标准
 
 一个好的总结应该回答以下问题（缺一不可）：
@@ -61,6 +70,10 @@ metadata:
         "best_for": ["适合人群/场景，如'亲子游'", "'情侣约会'"],
         "overall_rating": "positive | neutral | mixed | negative",
         "one_liner": "一句话推荐（15字以内）"
+      },
+      "coordinates": {
+        "lng": 经度,
+        "lat": 纬度
       }
     }
   ],
@@ -82,6 +95,7 @@ metadata:
 | `summary.highlights` | 每条 8-15 字，必须是具体的亮点描述 |
 | `summary.best_for` | 最多 3 项，每项描述具体场景 |
 | `summary.overall_rating` | `"positive"`=推荐；`"neutral"`=中性描述无明确推荐；`"mixed"`=有褒有贬；`"negative"`=不推荐 |
+| `coordinates` | 经纬度 `{"lng": 经度, "lat": 纬度}`，必须通过 `get_location` 工具获取，**不得编造**；失败时填 `null` |
 | `post_overall_summary.post_tone` | `"enthusiastic"`=热情推荐；`"informative"`=信息分享型；`"critical"`=批判/避坑型；`"balanced"`=客观中立；`"promotional"`=商业推广 |
 | `post_overall_summary.would_recommend_following` | 综合判断是否有价值跟随该帖子的推荐 |
 | `post_overall_summary.all_mentioned` | 必须**列出所有**在帖子中被提及的景点/项目/美食/住宿（无论是否有详细描述），不得遗漏 |
@@ -95,3 +109,4 @@ metadata:
 5. **推广识别**：如果帖子语气像商业推广（`promotional`），在 `recommendation_rationale` 中指出，谨慎推荐
 6. **在内容中推理**：如果帖子说"走了3小时才走完" → 总结中应体现"景区面积大，适合徒步"
 7. **顺序保留**：按帖子中提及的顺序排列 `spots_summary`
+8. **地理位置**：每个地点必须调用 `get_location` 获取坐标，用返回的 `lng`/`lat` 填入 `coordinates`；工具不可用时填 `null`

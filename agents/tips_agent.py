@@ -12,7 +12,7 @@ from utils.skill_loader import load_skill
 
 class GeneralAgent(BaseAgent):
 
-    def __init__(self, model_name: str, role: str):
+    def __init__(self, model_name: str, role: str, tools=None):
         """
         Args:
             model_name: 使用的api接口厂商 dee/kimi
@@ -20,15 +20,21 @@ class GeneralAgent(BaseAgent):
                   会自动在 skills/ 目录下查找对应的 .md 文件
         """
         self.model_name = model_name
+        self.tools = tools
         self.role = role
         super().__init__(
             model=self.model_name,
             system_prompt=load_skill(role),
         )
 
-    async def chat(self, messages: list[dict]) -> str:
+    # async def chat(self, messages: list[dict]) -> str:
+    #     """单轮对话"""
+    #     return await self.llm.chat(messages)
+
+
+    async def chat(self, messages):
         """单轮对话"""
-        return await self.llm.chat(messages)
+        return await self.llm.chat(messages, tools=self.tools)
 
     async def chat_stream(self, messages: list[dict]) -> AsyncIterator[str]:
         """流式对话"""

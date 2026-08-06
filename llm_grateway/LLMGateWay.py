@@ -52,10 +52,14 @@ class LLMGateway:
             return OpenaiProvider(curr_api_key, curr_model, curr_base_url)
         return "当前LLM模型供应商非openai"
 
-    async def chat(self, messages: list[dict]) -> str:
-        """普通对话（非流式）"""
+    # async def chat(self, messages: list[dict]) -> str:
+    #     """普通对话（非流式）"""
+    #     provider = self._get_provider()
+    #     return await provider.chat(self.system_prompt, messages)
+
+    async def chat(self, messages, tools=None):
         provider = self._get_provider()
-        return await provider.chat(self.system_prompt, messages)
+        return await provider.chat(self.system_prompt, messages, tools)
 
     async def chat_stream(self, messages: list[dict]) -> AsyncIterator[str]:
         """流式对话"""

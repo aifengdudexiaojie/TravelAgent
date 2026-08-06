@@ -43,37 +43,41 @@ async def get_user_intent_stream(input_text: str) -> AsyncIterator[str]:
 # ================================================================
 
 
-async def get_user_intent(input_text: str, redis: RedisMemory ) -> dict:
+async def get_user_intent(input_text: str, redis: RedisMemory) -> tuple[int, dict]:
     """
-    正常输出
+    阶段1：意图识别。
+    生成 task_id → 调用 Intent Agent → 存入 redis → 返回 (task_id, 结构化意图)
+
+    Returns:
+        (task_id, intent_content) 元组
     """
+    task_id = random.randint(0, 10000)
     try:
-        task_id = random.randint(0, 10000)
         intent_agent = GeneralAgent("deepseek", "Intent")
         input_msg = f"'task_id':{task_id}, 'input':{input_text}"
         messages = [{"role": "user", "content": input_msg}]
 
         json_response = await intent_agent.chat(messages)
         if not json_response or not json_response.strip():
-            return _fallback_intent(input_text)
+            return task_id, _fallback_intent(input_text)
 
         try:
-            tojson = json.loads(json_response)
-            # 将查询内容交给保存 并进行数据库存档 暂时先将流程跑通 暂时仅将内容存入redis 随机生成任务号存入redis中
-            # task_id 随机生成 location intent用于表示是前期的意图识别 note_id 0 content toJson
+            # 【修复】用 to_json 替代 json.loads：自动去掉 ```json ``` 代码块标记
+            tojson = to_json(json_response)
+            # 将识别结果存入 redis：task_id, location="intent", note_id=0
             redis.add_message(task_id, "intent", 0, tojson)
             parsed = clean_intent(tojson)
             if isinstance(parsed, dict):
-                return parsed
+                return task_id, parsed
         except json.JSONDecodeError:
             # AI 返回了非 JSON 文本，兜底返回结构化的占位数据
-            return _fallback_intent(input_text, raw=json_response)
+            return task_id, _fallback_intent(input_text, raw=json_response)
 
     except ImportError:
         # agents.tips_agent 尚未实现，返回 Mock 数据
-        return _fallback_intent(input_text)
+        return task_id, _fallback_intent(input_text)
     except Exception as e:
-        return {"error": str(e), **_fallback_intent(input_text)}
+        return task_id, {"error": str(e), **_fallback_intent(input_text)}
 
 
 def _fallback_intent(input_text: str, raw: str | None = None) -> dict:
@@ -98,12 +102,16 @@ def _fallback_intent(input_text: str, raw: str | None = None) -> dict:
     time_str = f"{day_match.group(1)}天" if day_match else "3天"
 
     result = {
-        "time": time_str,
-        "start_day": None,
-        "end_day": None,
+        # 【修复】字段名对齐 IntentContent 模型（新字段名）
         "locations": locations or ["未知"],
-        "state": "relaxed",
-        "budget": budget,
+        "days": time_str,
+        "start_date": None,
+        "end_date": None,
+        "people_count": None,
+        "pace": "正常",
+        "budget_level": "正常",
+        "budget_amount": budget,
+        "budget_amount_per_person": None,
         "others": None,
     }
     if raw:

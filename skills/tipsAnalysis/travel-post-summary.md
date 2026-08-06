@@ -32,7 +32,8 @@ metadata:
           "summary": "综合总结",
           "cost": "费用",
           "duration": "时长",
-          "precautions": ["注意事项"]
+          "precautions": ["注意事项"],
+          "coordinates": {"lng": 经度, "lat": 纬度}
         }
       ],
       "overall_rating": "positive | neutral | mixed | negative",
@@ -91,6 +92,7 @@ metadata:
       "cost": "费用区间（如'60-80元/人'、'免费'）",
       "duration": "游玩时长（如'2-3小时'）",
       "precautions": ["注意事项1", "注意事项2"],
+      "coordinates": {"lng": 经度, "lat": 纬度},
       "mention_count": 被多少篇帖子提及,
       "recommended_by": ["推荐它的帖子标题（取前2个）"]
     }
@@ -116,6 +118,7 @@ metadata:
 | `spots[].mention_count` | 数字，该景点被多少篇帖子提及（≥2 表示有共识） |
 | `spots[].cost` | 合并所有帖子的费用信息，取区间；只有一篇提到就直接用 |
 | `spots[].precautions` | 合并所有帖子的注意事项，去重 |
+| `spots[].coordinates` | 经纬度 `{"lng": 经度, "lat": 纬度}`，优先复用输入中各帖子的坐标；缺失时用 `get_location` 工具获取，不得编造 |
 | `food_recommendations` | 只保留有明确推荐倾向的美食/餐厅 |
 | `travel_tips` | 必须是跨帖子的共性建议，单帖建议不放入 |
 
@@ -127,3 +130,4 @@ metadata:
 4. **明确归属**：每个景点/美食必须属于输入的地点，不得引入其他地点内容
 5. **不编造**：帖子中没有提到的信息填 `null` 或省略
 6. **输出简洁**：`summary` 控制在 30-80 字，方便后续 Agent 阅读
+7. **地理位置**：每个 `spots[].coordinates` 必须包含经纬度——优先复用输入中已有坐标，缺失的调用 `get_location` 工具获取；工具失败时填 `null` 并注明，不得编造

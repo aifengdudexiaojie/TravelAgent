@@ -1,0 +1,7 @@
+前端发送大体要求 例：msg = 帮我总结一份2天一夜的扬州旅游攻略 不要太累
+msg传到后端后生成相应的task_id并进行意图识别得到 intent_content
+前端得到task_id和intent_content部分消息后 展示intent_content中的内容
+这时前端 出现 "确认" 和 "重新识别" 按钮 用户点击"重新识别"则重新传用户输入
+如果点击"确认" 则将 task_id 传回后端 进入总结部分
+后端进行 summary_from_notes 期间将分析进度 即根据地址1 地址2 ... 帖子1 帖子2... 将进度传回前端
+在后端完成总结之后将summary_from_notes方法的final_summary_res返回给前端 要求展示具体的旅游行程 以及 分层展示返回内容中的所有属性

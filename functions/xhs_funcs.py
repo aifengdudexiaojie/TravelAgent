@@ -1,3 +1,5 @@
+import json
+
 from xiaohongshu_mcp_client import _batch_call
 
 
@@ -102,15 +104,18 @@ def get_note_detail(note_id: str, xsec_token: str, load_comments: bool = False):
 
 
 def show_status():
-    """检查登录状态"""
+    """检查登录状态，返回是否已登录（True/False）"""
     print("\n--- 登录状态 ---")
     result = _batch_call("tools/call", {"name": "check_login_status"})
     if isinstance(result, dict):
         for k, v in result.items():
             print(f"  {k}: {v}")
+        text = json.dumps(result, ensure_ascii=False)
     else:
-        print(f"  {result}")
-    print()
+        text = str(result)
+        print(text)
+    # check_login_status 返回文本含"已登录"即为登录成功
+    return "已登录" in text
 
 
 def get_notes_by_query(query: str):
