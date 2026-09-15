@@ -1,0 +1,137 @@
+# ================================================================================
+# .gitignore —— AI 旅行规划助手
+#
+# ⚠️ 上传 GitHub 前请务必确认这几类文件**没有**被提交：
+#    .env（真实密钥） / logs/（含请求内容） / xiaohongshumcp/（含 24MB exe + 登录 cookies）
+#    自查命令：git status --short  以及  git ls-files | findstr /i "env log cookies exe"
+# ================================================================================
+
+# ================================================
+# 密钥与本地配置（最重要）
+# ================================================
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+config/*.json
+secrets.json
+
+# ================================================
+# Python
+# ================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+pip-wheel-metadata/
+
+# 虚拟环境（本机是 .venv，173MB，绝不能提交）
+.venv/
+venv/
+env/
+ENV/
+
+# ================================================
+# 测试 / 类型检查 / 格式化缓存
+# ================================================
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.cache/
+junit*.xml
+*.lcov
+
+# ================================================
+# 前端（Vue）
+# ================================================
+node_modules/
+vue/node_modules/
+vue/dist/
+vue/.npm-cache/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ================================================
+# 日志与临时文件
+# ================================================
+logs/
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ================================================
+# 小红书 MCP（⚠️ 目录名是全小写 xiaohongshumcp：
+#   里面有两个 20MB+ 的 exe 和 cookies.json 登录凭据，必须排除）
+# ================================================
+xiaohongshumcp/
+xiaohongshu-mcp/
+xiaohongshuMcp/
+cookies.json
+*.cookies.json
+browser_data/
+chrome-profile/
+
+# ================================================
+# 数据库 / 本地数据
+# ================================================
+*.db
+*.sqlite
+*.sqlite3
+data/
+qdrant_storage/
+pg_data/
+
+# ================================================
+# IDE / 编辑器
+# ================================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.claude/
+.cursor/
+
+# ================================================
+# 临时调试脚本（约定：只放在项目根、以 _ 开头，用完即删）
+# ⚠️ 注意不要写成 `_*.py`：那会连 `__init__.py` 一起忽略掉，
+#    导致新克隆下来的包缺 __init__.py 而 import 失败。
+# ================================================
+/_*.py
+/_stage*/
+# 双保险：任何目录下的包初始化文件都必须提交
+!**/__init__.py

@@ -1,0 +1,417 @@
+{
+  "meta": {
+    "destinations": ["香港"],
+    "total_days": "3天",
+    "date_range": {
+      "start": "2026-10-03",
+      "end": "2026-10-05"
+    },
+    "budget": {
+      "total": null,
+      "estimated": "约HKD 4900（含餐饮/交通/住宿，不含购物）",
+      "status": "within_budget"
+    },
+    "pace": "relaxed",
+    "generated_at": "2026-10-02T10:00:00Z"
+  },
+  "trade_off_summary": {
+    "total_spots_found": 21,
+    "spots_selected": 13,
+    "spots_excluded": 8,
+    "exclusion_reasons": {
+      "太平山顶": "往返需较长交通与排队时间，与『购物为主、不要太累』冲突，改列入备选推荐",
+      "兰桂坊": "以夜生活酒吧为主，与购物主题匹配度低",
+      "香港迪士尼乐园": "需占满一整天，非购物主题，休闲节奏排不下",
+      "海洋公园": "需占满一整天，与购物为主的行程冲突",
+      "南丫岛": "离岛行程耗时，与购物节奏不符",
+      "赤柱": "位置偏远，交通时间过长",
+      "黄大仙祠": "与购物主题关联弱，时间有限故排除",
+      "天际100观景台": "主题重复，已有海滨赏景安排，择优保留"
+    }
+  },
+  "daily_plan": {
+    "第一天": {
+      "date": "2026-10-03",
+      "day_theme": "尖沙咀海滨购物·轻松开局",
+      "periods": [
+        {
+          "period": "早上",
+          "content": "无安排（睡到自然醒，轻松开启旅程）",
+          "type": "free",
+          "detail": null
+        },
+        {
+          "period": "中午",
+          "content": "尖沙咀一兰拉面用餐，餐后步行前往海港城",
+          "type": "food",
+          "detail": {
+            "name": "一兰拉面（尖沙咀店）",
+            "summary": "人气豚骨拉面，独立隔间座位，点餐自助化，适合轻松用餐后开始购物",
+            "duration": "约1小时",
+            "cost": "人均约HKD 100",
+            "coordinates": {"lng": 114.1725, "lat": 22.2985}
+          }
+        },
+        {
+          "period": "下午",
+          "content": "海港城购物（奢侈品、美妆、潮流品牌集中，规模庞大适合慢逛）",
+          "type": "scenic_spot",
+          "detail": {
+            "name": "海港城 Harbour City",
+            "summary": "全港最大购物中心之一，坐拥维港海景，从一线奢侈品牌到美妆、潮流一应俱全，购物为主行程的首选",
+            "duration": "约3-4小时",
+            "cost": "购物为主，餐饮另计",
+            "coordinates": {"lng": 114.1694, "lat": 22.2967}
+          }
+        },
+        {
+          "period": "晚上",
+          "content": "K11 Musea 逛店，随后步行至星光大道海滨欣赏幻彩咏香江灯光秀",
+          "type": "scenic_spot",
+          "detail": {
+            "name": "K11 Musea & 星光大道",
+            "summary": "艺术主题高端商场，紧邻星光大道与维港海滨，傍晚可欣赏幻彩咏香江，购物赏景两不误",
+            "duration": "约2-3小时",
+            "cost": "免费（购物另计）",
+            "coordinates": {"lng": 114.1743, "lat": 22.2936}
+          }
+        }
+      ],
+      "day_cost": "餐饮约HKD 250 + 购物弹性",
+      "tips": "海港城面积巨大，建议提前查好想逛的品牌所在区，避免来回奔波；晚上8点的幻彩咏香江灯光秀是亮点。"
+    },
+    "第二天": {
+      "date": "2026-10-04",
+      "day_theme": "中环文艺漫步·铜锣湾购物",
+      "periods": [
+        {
+          "period": "早上",
+          "content": "半山自动扶梯沿线散步，步行至大馆参观",
+          "type": "scenic_spot",
+          "detail": {
+            "name": "半山自动扶梯 & 大馆",
+            "summary": "体验全球最长户外有盖扶梯，沿途感受中环街巷风情；大馆为前中区警署活化而成的历史艺术区，适合半日慢游",
+            "duration": "约2-3小时",
+            "cost": "免费（部分展览另计）",
+            "coordinates": {"lng": 114.1535, "lat": 22.2828}
+          }
+        },
+        {
+          "period": "中午",
+          "content": "中环 Bakehouse 享用招牌牛角包与轻食",
+          "type": "food",
+          "detail": {
+            "name": "Bakehouse（中环）",
+            "summary": "人气烘焙店，招牌酸种蛋挞与牛角包广受好评，购物途中补给好去处",
+            "duration": "约1小时",
+            "cost": "人均约HKD 70",
+            "coordinates": {"lng": 114.1560, "lat": 22.2820}
+          }
+        },
+        {
+          "period": "下午",
+          "content": "中环置地广场一带逛街购物，随后乘地铁前往铜锣湾",
+          "type": "scenic_spot",
+          "detail": {
+            "name": "中环置地广场及商圈",
+            "summary": "中环核心高端购物商圈，国际大牌云集，适合衔接午后购物动线",
+            "duration": "约2小时",
+            "cost": "购物为主",
+            "coordinates": {"lng": 114.1580, "lat": 22.2815}
+          }
+        },
+        {
+          "period": "晚上",
+          "content": "铜锣湾时代广场及 SOGO 崇光百货购物",
+          "type": "scenic_spot",
+          "detail": {
+            "name": "时代广场（铜锣湾）",
+            "summary": "铜锣湾地标购物中心，品牌齐全，周边 SOGO 与街边店铺密集，是购物主场之一",
+            "duration": "约2-3小时",
+            "cost": "购物为主（周边餐饮另计）",
+            "coordinates": {"lng": 114.1822, "lat": 22.2781}
+          }
+        }
+      ],
+      "day_cost": "餐饮约HKD 250 + 购物弹性",
+      "tips": "中环至铜锣湾可乘地铁港岛线数站直达，动线顺畅；同一天集中港岛区，避免跨区奔波。"
+    },
+    "第三天": {
+      "date": "2026-10-05",
+      "day_theme": "旺角街市购物·庙街夜市收尾",
+      "periods": [
+        {
+          "period": "早上",
+          "content": "无安排（睡到自然醒，轻松出发）",
+          "type": "free",
+          "detail": null
+        },
+        {
+          "period": "中午",
+          "content": "旺角我杯茶用餐，品尝港式饮品与轻食",
+          "type": "food",
+          "detail": {
+            "name": "我杯茶",
+            "summary": "港式茶饮/茶餐厅风味，适合逛街间隙休息补给，感受本地味道",
+            "duration": "约1小时",
+            "cost": "人均约HKD 60",
+            "coordinates": {"lng": 114.1705, "lat": 22.3185}
+          }
+        },
+        {
+          "period": "下午",
+          "content": "旺角女人街、波鞋街逛街扫货",
+          "type": "scenic_spot",
+          "detail": {
+            "name": "女人街 & 波鞋街（旺角）",
+            "summary": "旺角代表性街市购物区，女人街淘平价服饰小物、波鞋街聚集运动鞋店，适合预算充足时深入扫货",
+            "duration": "约3小时",
+            "cost": "购物为主",
+            "coordinates": {"lng": 114.1712, "lat": 22.3185}
+          }
+        },
+        {
+          "period": "晚上",
+          "content": "庙街夜市尝地道小吃，随后在义顺牛奶公司享用甜品收尾",
+          "type": "scenic_spot",
+          "detail": {
+            "name": "庙街夜市",
+            "summary": "香港著名夜市，摊位、大排档与算命摊交织，感受市井烟火气，适合行程收尾",
+            "duration": "约2小时",
+            "cost": "人均约HKD 100",
+            "coordinates": {"lng": 114.1703, "lat": 22.3076}
+          }
+        }
+      ],
+      "day_cost": "餐饮约HKD 300 + 购物弹性",
+      "tips": "旺角人流量大，注意随身财物；庙街夜市傍晚后最热闹，可从旺角沿弥敦道步行至油麻地。"
+    }
+  },
+  "spots_catalog": [
+    {
+      "name": "海港城 Harbour City",
+      "type": "scenic_spot",
+      "location": "香港·尖沙咀",
+      "coordinates": {"lng": 114.1694, "lat": 22.2967},
+      "summary": "全港最大购物中心之一，坐拥维港海景，云集一线奢侈品牌、美妆、潮流与餐饮，是购物为主行程的核心一站。内部区域庞大，建议提前规划动线。",
+      "highlights": ["奢侈品与美妆品牌齐全", "维港海景", "餐饮选择丰富"],
+      "precautions": ["面积大易迷路，建议先查品牌位置", "节假日人流密集"],
+      "duration": "3-4小时",
+      "cost": "购物为主",
+      "recommendation_count": 3,
+      "sources": ["香港购物攻略合集", "尖沙咀一日游推荐"]
+    },
+    {
+      "name": "K11 Musea & 星光大道",
+      "type": "scenic_spot",
+      "location": "香港·尖沙咀",
+      "coordinates": {"lng": 114.1743, "lat": 22.2936},
+      "summary": "艺术主题高端商场，紧邻星光大道与维港海滨，傍晚可欣赏幻彩咏香江灯光秀，购物与赏景结合，适合休闲节奏。",
+      "highlights": ["艺术主题空间", "维港海滨夜景", "幻彩咏香江灯光秀"],
+      "precautions": ["灯光秀每晚约8点开始，建议提前占位", "海滨风大注意保暖"],
+      "duration": "2-3小时",
+      "cost": "免费（购物另计）",
+      "recommendation_count": 2,
+      "sources": ["尖沙咀海滨夜景推荐", "香港打卡地清单"]
+    },
+    {
+      "name": "半山自动扶梯 & 大馆",
+      "type": "scenic_spot",
+      "location": "香港·中环",
+      "coordinates": {"lng": 114.1535, "lat": 22.2828},
+      "summary": "全球最长户外有盖扶梯，沿途感受中环街巷风情；大馆由前中区警署活化而成，历史与艺术交融，适合半日轻松漫步。",
+      "highlights": ["中环街巷风情", "历史建筑活化", "艺术展览"],
+      "precautions": ["部分展览需另购票", "扶梯有运营方向时段限制"],
+      "duration": "2-3小时",
+      "cost": "免费（部分展览另计）",
+      "recommendation_count": 2,
+      "sources": ["中环文艺路线推荐", "香港文化地标盘点"]
+    },
+    {
+      "name": "中环置地广场及商圈",
+      "type": "scenic_spot",
+      "location": "香港·中环",
+      "coordinates": {"lng": 114.1580, "lat": 22.2815},
+      "summary": "中环核心高端购物商圈，国际大牌云集，动线紧凑，适合衔接午后购物行程，与半山扶梯、大馆地理邻近。",
+      "highlights": ["国际大牌集中", "高端购物体验"],
+      "precautions": ["午间白领人流多", "部分店铺需预约"],
+      "duration": "2小时",
+      "cost": "购物为主",
+      "recommendation_count": 2,
+      "sources": ["香港购物攻略合集", "中环商圈导览"]
+    },
+    {
+      "name": "时代广场（铜锣湾）",
+      "type": "scenic_spot",
+      "location": "香港·铜锣湾",
+      "coordinates": {"lng": 114.1822, "lat": 22.2781},
+      "summary": "铜锣湾地标购物中心，品牌齐全，周边 SOGO 与街边店铺密集，是购物主场之一，适合休闲节奏慢逛。",
+      "highlights": ["品牌齐全", "周边街区购物丰富"],
+      "precautions": ["周末与节假日人流大", "临近街道拥挤"],
+      "duration": "2-3小时",
+      "cost": "购物为主",
+      "recommendation_count": 3,
+      "sources": ["香港购物攻略合集", "铜锣湾购物指南"]
+    },
+    {
+      "name": "女人街 & 波鞋街（旺角）",
+      "type": "scenic_spot",
+      "location": "香港·旺角",
+      "coordinates": {"lng": 114.1712, "lat": 22.3185},
+      "summary": "旺角代表性街市购物区，女人街淘平价服饰小物、波鞋街聚集运动鞋店，充满市井活力，适合预算充足时深入扫货。",
+      "highlights": ["平价服饰小物", "运动鞋集中", "市井风情"],
+      "precautions": ["注意比价与货品真伪", "人流密集留意随身财物"],
+      "duration": "3小时",
+      "cost": "购物为主",
+      "recommendation_count": 3,
+      "sources": ["旺角逛街攻略", "香港购物攻略合集"]
+    },
+    {
+      "name": "庙街夜市",
+      "type": "scenic_spot",
+      "location": "香港·油麻地",
+      "coordinates": {"lng": 114.1703, "lat": 22.3076},
+      "summary": "香港著名夜市，摊位、大排档与算命摊交织，洋溢市井烟火气，适合作为行程收尾，品尝地道小吃。",
+      "highlights": ["地道小吃", "夜市摊位", "市井烟火气"],
+      "precautions": ["傍晚后人流多，注意财物", "部分摊档仅收现金"],
+      "duration": "2小时",
+      "cost": "人均约HKD 100",
+      "recommendation_count": 2,
+      "sources": ["香港夜市推荐", "油麻地夜市指南"]
+    }
+  ],
+  "food_catalog": [
+    {
+      "name": "一兰拉面（尖沙咀店）",
+      "category": "main_dish",
+      "location": "香港·尖沙咀",
+      "recommended_dishes": ["豚骨拉面", "溏心蛋", "追加叉烧"],
+      "summary": "人气豚骨拉面，独立隔间座位、自助点餐，用餐轻松高效，适合开启购物行程前快速补给。",
+      "avg_cost": "人均约HKD 100",
+      "precautions": ["用餐高峰期需排队", "口味可自定义"],
+      "sources": ["香港美食合集", "尖沙咀美食推荐"]
+    },
+    {
+      "name": "Bakehouse（中环）",
+      "category": "snack",
+      "location": "香港·中环",
+      "recommended_dishes": ["酸种蛋挞", "牛角包"],
+      "summary": "人气烘焙店，招牌蛋挞与牛角包广受好评，适合中环逛街途中轻食补给。",
+      "avg_cost": "人均约HKD 70",
+      "precautions": ["热门时段常售罄", "建议提前前往"],
+      "sources": ["香港烘焙店推荐", "中环咖啡轻食清单"]
+    },
+    {
+      "name": "我杯茶",
+      "category": "drink",
+      "location": "香港·旺角",
+      "recommended_dishes": ["港式奶茶", "轻食套餐"],
+      "summary": "港式茶饮/茶餐厅风味，适合逛街间隙休息补给，感受本地味道。",
+      "avg_cost": "人均约HKD 60",
+      "precautions": ["旺角人流多，注意随身物品"],
+      "sources": ["旺角美食推荐", "香港茶餐厅清单"]
+    },
+    {
+      "name": "义顺牛奶公司",
+      "category": "snack",
+      "location": "香港·佐敦",
+      "recommended_dishes": ["双皮奶", "姜汁撞奶"],
+      "summary": "老字号甜品店，以双皮奶与炖奶闻名，适合在庙街夜市后作为甜品收尾。",
+      "avg_cost": "人均约HKD 40",
+      "precautions": ["座位有限常需拼桌", "部分门店较早打烊"],
+      "sources": ["香港甜品推荐", "油麻地美食指南"]
+    }
+  ],
+  "extra_recommendations": [
+    {
+      "name": "太平山顶",
+      "type": "scenic_spot",
+      "location": "香港·中环",
+      "coordinates": {"lng": 114.1430, "lat": 22.2759},
+      "summary": "俯瞰维港与港岛全景的经典观景点，山顶凌霄阁与环形步道视野极佳。",
+      "duration": "约3小时",
+      "cost": "山顶缆车往返约HKD 88",
+      "recommend_reason": "景观一流，但往返交通与排队耗时较长，与『购物为主、不要太累』节奏略冲突，若愿意早起可安排。",
+      "sources": ["香港必去景点盘点", "维港观景推荐"]
+    },
+    {
+      "name": "天星小轮",
+      "type": "activity",
+      "location": "香港·尖沙咀/中环",
+      "coordinates": {"lng": 114.1686, "lat": 22.2937},
+      "summary": "横渡维多利亚港的百年渡轮，船程短、票价低廉，是往返九龙与港岛的高性价比交通兼赏景方式。",
+      "duration": "约15分钟",
+      "cost": "约HKD 4-5",
+      "recommend_reason": "既省交通费又能海上赏维港，可作为尖沙咀↔中环的替代交通体验，灵活加入。",
+      "sources": ["香港交通攻略", "维港打卡推荐"]
+    },
+    {
+      "name": "兰桂坊",
+      "type": "activity",
+      "location": "香港·中环",
+      "coordinates": {"lng": 114.1556, "lat": 22.2809},
+      "summary": "中环夜生活地标，酒吧餐厅林立，夜晚气氛热烈。",
+      "duration": "约2小时",
+      "cost": "人均约HKD 150起",
+      "recommend_reason": "夜生活体验佳，但与购物主题匹配度较低，若晚间有余力可顺道体验。",
+      "sources": ["香港夜生活推荐", "中环酒吧指南"]
+    },
+    {
+      "name": "兰芳园（中环）",
+      "type": "food",
+      "location": "香港·中环",
+      "coordinates": {"lng": 114.1535, "lat": 22.2830},
+      "summary": "老字号茶餐厅，招牌丝袜奶茶与猪扒包，港式风味道地。",
+      "duration": "约1小时",
+      "cost": "人均约HKD 60",
+      "recommend_reason": "地道港味早餐/下午茶之选，若想更换餐饮口味可替换行程中的用餐点。",
+      "sources": ["香港茶餐厅清单", "中环美食推荐"]
+    },
+    {
+      "name": "南丫岛",
+      "type": "scenic_spot",
+      "location": "香港·离岛",
+      "coordinates": {"lng": 114.1186, "lat": 22.2018},
+      "summary": "离岛悠闲徒步与海鲜胜地，远离市区喧嚣，自然风光宜人。",
+      "duration": "半天以上",
+      "cost": "渡轮往返约HKD 50",
+      "recommend_reason": "适合喜欢自然的旅客，但需半天以上且与购物主题不符，本次未纳入。",
+      "sources": ["香港离岛攻略", "南丫岛徒步推荐"]
+    }
+  ],
+  "precautions_summary": {
+    "tickets": [
+      "大馆部分特展需另购门票，入场前先确认展览是否收费",
+      "太平山缆车旺季排队久，建议提前网上购票并错峰"
+    ],
+    "transport": [
+      "中环至铜锣湾乘地铁港岛线数站直达，动线顺畅，避免跨区来回",
+      "尖沙咀至中环可考虑天星小轮，票价低廉又兼赏维港",
+      "旺角沿弥敦道步行可至油麻地庙街，无需全程打车"
+    ],
+    "timing": [
+      "幻彩咏香江灯光秀每晚约8点开始，建议提前到海滨占位",
+      "旺角女人街、波鞋街傍晚后最热闹，但人流也最大",
+      "节假日商场与海滨人流密集，尽量错峰出行"
+    ],
+    "cost": [
+      "海港城、时代广场等大型商场促销多，购物前可比价",
+      "庙街夜市部分摊档仅收现金，建议备零钱",
+      "休闲节奏下每日安排2-3个核心点即可，避免因赶场额外消费"
+    ],
+    "other": [
+      "旺角、庙街人流密集，注意随身财物与扒手",
+      "购物为主，建议预留行李空间或使用商场寄存服务",
+      "10月香港仍偏湿热，室内冷气足，可备薄外套"
+    ]
+  },
+  "budget_breakdown": {
+    "tickets": "约HKD 100",
+    "food": "约HKD 1500",
+    "transport": "约HKD 300",
+    "accommodation": "约HKD 3000（3晚，充裕预算标准）",
+    "other": "购物预算弹性，未计入合计",
+    "total": "约HKD 4900（不含购物）",
+    "remaining": null
+  }
+}

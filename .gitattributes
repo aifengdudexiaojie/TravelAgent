@@ -1,0 +1,26 @@
+# 统一换行符：仓库内一律 LF，避免 Windows/macOS 协作时整文件 diff 抖动
+* text=auto eol=lf
+
+# Windows 脚本保持 CRLF 才能在 cmd/PowerShell 里正常执行
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.vbs text eol=crlf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.exe binary
+*.zip binary
+
+# 锁文件：不参与 diff 展示（体积大、机器生成）
+package-lock.json -diff
+pnpm-lock.yaml -diff

@@ -1,0 +1,113 @@
+# ============================================================
+# 本地/开发环境依赖服务
+#
+# 使用建议（本机已原生安装 ES 9.5.3 与 Kibana 的情况）：
+#   只启动 PG/Qdrant/Redis 即可：
+#       docker compose up -d redis
+#   原生 ES 启动：E:\elasticsearch-9.5.3\bin\elasticsearch.bat
+#
+# ⚠ Redis 是聊天链路的硬依赖：memory_store.acquire_session_lock() 用它做会话锁，
+#    没有它 /api/chat/* 会直接 500（启动日志只有一行 warning，不报错）。
+#    等价的免 compose 命令：
+#       docker run -d --name redis -p 6379:6379 --restart unless-stopped redis:7-alpine
+#
+# ⚠ 端口冲突：原生 ES 占用 9200，下面容器版 ES 也用 9200，二者不要同时启动。
+#    若要全部容器化：docker compose up -d   （先停掉原生 ES/Kibana）
+#
+# 连接串与 .env 对应关系：
+#   DATABASE_URL=postgresql://postgres:postgres@localhost:5432/travel_agent
+#   QDRANT_URL=http://localhost:6333
+#   ES_URL=http://localhost:9200
+# ============================================================
+
+services:
+  # ---------- PostgreSQL：攻略真相源（guides 表，JSONB） ----------
+  postgres:
+    image: postgres:16-alpine
+    container_name: travel-pg
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=travel_agent
+      - TZ=Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d travel_agent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------- Qdrant：双通道语义向量（guide_facts / guide_semantics） ----------
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: travel-qdrant
+    ports:
+      - "6333:6333"   # HTTP / REST
+      - "6334:6334"   # gRPC（可选）
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  # ---------- Redis：会话锁 + 任务状态缓存（.env 的 REDIS_URL=redis://localhost:6379/0） ----------
+  redis:
+    image: redis:7-alpine
+    container_name: travel-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------- Elasticsearch：词法检索（guide_search_docs） ----------
+  # 本机若已原生运行 ES，请勿启动本服务（端口 9200 冲突）
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    container_name: travel-es
+    profiles: ["full"]          # 仅在 `--profile full` 或显式指定服务时启动
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------- Kibana：可选（同样只在 full profile 下启动） ----------
+  kibana:
+    image: docker.elastic.co/elasticsearch/kibana:8.12.0
+    container_name: travel-kibana
+    profiles: ["full"]
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+volumes:
+  pg_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  redis_data:
+    driver: local
+  es_data:
+    driver: local

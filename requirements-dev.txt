@@ -1,0 +1,15 @@
+# ============================================================
+# 开发/测试依赖（生产部署只需要 requirements.txt）
+#
+#   pip install -r requirements-dev.txt
+#   python -m pytest              # 跑单元测试（不会触发真实 LLM/MCP 调用）
+# ============================================================
+
+-r requirements.txt
+
+# 测试框架
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+
+# 单测里用到的 Web 测试客户端（TestClient 依赖 httpx，已在 requirements.txt）
+# httpx>=0.28.0
