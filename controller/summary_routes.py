@@ -33,10 +33,11 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from auth import get_current_user
 from services.summary_task import (      # noqa: F401  save_summary_to_rag 在此重导出，兼容旧引用
     cancel_task,
     save_summary_to_rag,
@@ -53,7 +54,7 @@ class SummaryRequest(BaseModel):
     task_id: int
     # 从第几个事件开始订阅：0（默认）= 重放全部历史进度，适合刷新/切页后重新挂载
     from_index: int = 0
-    # 以下均为可选：用于把生成的攻略归属到具体用户；不传则用环境变量默认归属
+    # 归属信息：user_id **仅作兼容保留**，实际归属以登录态为准（见 _owner）
     user_id: str | None = None
     username: str | None = None
     nickname: str | None = None
@@ -68,27 +69,44 @@ def _sse(event_type: str, data) -> str:
     return f"data: {payload}\n\n"
 
 
-def _owner(req: SummaryRequest) -> dict:
+def _owner(req: SummaryRequest, current_user: dict) -> dict:
+    """入库归属：以**登录态**为准，请求体里的 user_id 不再被信任（防越权写入）。"""
     return {
-        "user_id": req.user_id,
-        "username": req.username,
-        "nickname": req.nickname,
+        "user_id": current_user["user_id"],
+        "username": current_user.get("username") or req.username,
+        "nickname": current_user.get("nickname") or req.nickname,
         "is_public": req.is_public,
         "save_to_rag": req.save_to_rag,
     }
 
 
+def _guard(exc: Exception) -> HTTPException:
+    """把服务层的 KeyError/PermissionError 转成合适的 HTTP 状态码。"""
+    if isinstance(exc, PermissionError):
+        return HTTPException(status_code=403, detail="无权访问该分析任务")
+    return HTTPException(status_code=404, detail="任务不存在或已过期，请重新识别意图")
+
+
 @router.post("/stream")
-async def summary_stream(req: SummaryRequest):
+async def summary_stream(req: SummaryRequest, current_user: dict = Depends(get_current_user)):
     """订阅分析进度（SSE）。
 
     幂等：同一个 task_id 只会真正分析一次；重复调用（前端重连/切页回来/刷新）
     只是挂到同一个后台任务上，从 from_index 开始重放并继续跟随。
+    需要登录：并用登录用户校验任务归属（否则 task_id 被猜到就能读别人的攻略）。
     """
-    task = start_summary_task(req.task_id, _owner(req))
+    user_id = current_user["user_id"]
+    try:
+        task = start_summary_task(req.task_id, _owner(req, current_user), owner_user_id=user_id)
+    except PermissionError as exc:
+        raise _guard(exc) from exc
+
+    if task.owner_user_id and task.owner_user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权访问该分析任务")
+
     logger.info(
-        "SSE 订阅 task_id=%s status=%s 已有事件=%d from_index=%d",
-        req.task_id, task.status, len(task.events), req.from_index,
+        "SSE 订阅 task_id=%s user=%s status=%s 已有事件=%d from_index=%d",
+        req.task_id, user_id, task.status, len(task.events), req.from_index,
     )
 
     async def event_generator():
@@ -117,18 +135,24 @@ async def summary_stream(req: SummaryRequest):
 
 
 @router.get("/task/{task_id}")
-async def summary_task_snapshot(task_id: int):
+async def summary_task_snapshot(task_id: int, current_user: dict = Depends(get_current_user)):
     """任务快照：状态 + 已产生的事件 + 最终总结（刷新页面后用它一次性追平）。"""
-    snapshot = snapshot_task(task_id)
+    try:
+        snapshot = snapshot_task(task_id, user_id=current_user["user_id"])
+    except PermissionError as exc:
+        raise _guard(exc) from exc
     if snapshot is None:
         raise HTTPException(status_code=404, detail="任务不存在或已过期，请重新识别意图")
     return snapshot
 
 
 @router.post("/cancel/{task_id}")
-async def summary_task_cancel(task_id: int):
+async def summary_task_cancel(task_id: int, current_user: dict = Depends(get_current_user)):
     """取消正在执行的分析任务。"""
-    ok = await cancel_task(task_id)
+    try:
+        ok = await cancel_task(task_id, user_id=current_user["user_id"])
+    except PermissionError as exc:
+        raise _guard(exc) from exc
     if not ok:
         raise HTTPException(status_code=409, detail="任务不存在或已结束")
     return {"cancelled": True, "task_id": task_id}

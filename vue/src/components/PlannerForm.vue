@@ -11,8 +11,10 @@ const props = withDefaults(
     isPlanning: boolean
     modelValue: string
     placeholder?: string
+    /** 非空则表示当前不可用（例如还没登录小红书），文案会显示出来 */
+    blockedReason?: string
   }>(),
-  { placeholder: '输入你的旅行需求，例如：去成都玩3天，预算3000，节奏别太赶' },
+  { placeholder: '输入你的旅行需求，例如：去成都玩3天，预算3000，节奏别太赶', blockedReason: '' },
 )
 
 const emit = defineEmits<{
@@ -27,7 +29,7 @@ const text = computed({
 
 function handleSubmit() {
   const value = text.value.trim()
-  if (!value || props.isPlanning) return
+  if (!value || props.isPlanning || props.blockedReason) return
   emit('submit', value)
 }
 </script>
@@ -39,15 +41,15 @@ function handleSubmit() {
         <div class="flex-1">
           <input
             v-model="text"
-            :placeholder="placeholder"
-            :disabled="isPlanning"
+            :placeholder="blockedReason || placeholder"
+            :disabled="isPlanning || !!blockedReason"
             class="w-full min-h-11 px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:opacity-60 disabled:bg-gray-50"
           />
         </div>
 
         <button
           type="submit"
-          :disabled="isPlanning || !text.trim()"
+          :disabled="isPlanning || !!blockedReason || !text.trim()"
           class="h-11 px-6 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
         >
           <span
@@ -56,6 +58,11 @@ function handleSubmit() {
           ></span>
           <span>{{ isPlanning ? '识别中…' : '🚀 开始规划' }}</span>
         </button>
+      </div>
+
+      <!-- 前置条件未满足（例如未登录小红书） -->
+      <div v-if="blockedReason" class="flex items-center gap-2 text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+        <span>🚫</span><span>{{ blockedReason }}</span>
       </div>
 
       <!-- 载入条：提交后立刻出现，避免"点了没反应"的体感 -->

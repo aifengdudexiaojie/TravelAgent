@@ -129,7 +129,9 @@ def main() -> None:
         "\n" + "=" * 78 + "\n"
         f" 后端启动：http://{host}:{port}\n"
         f" 日志文件：{log_path}\n"
-        f" 实时查看：前端「🖥️ 后端日志」页，或  Get-Content '{log_path}' -Wait -Tail 50\n"
+        f" 查看日志：另开一个终端跑  python log_viewer.py\n"
+        f"           → http://127.0.0.1:8099（用户名/口令取自 .env 的 LOG_VIEWER_*）\n"
+        f"           或  Get-Content '{log_path}' -Wait -Tail 50\n"
         + "=" * 78
     )
     print(banner, flush=True)

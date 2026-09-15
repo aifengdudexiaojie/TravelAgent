@@ -6,7 +6,10 @@
 test/
 ├── conftest.py            # pytest 配置：把项目根加入 sys.path + 禁止收集 manual/
 ├── test_auth.py           # 单元测试：注册/登录/鉴权（用 FakeES 模拟 ES，不连真库）
-├── test_chat_service.py   # 单元测试：聊天流式事件被正确消费为完整回复（mock LLM）
+├── test_chat_service.py   # 单元测试：聊天三模式 + 流式事件消费（mock LLM / 内存版 memory_store）
+├── test_summary_task.py   # 单元测试：分析任务归属与越权防护、task_id 熵、路由鉴权
+├── test_xhs_manager.py    # 单元测试：小红书一人一实例（目录隔离/端口分配/查状态不拉实例）
+├── test_intent_dates.py   # 单元测试：意图识别的相对日期解析与归一化（防"固定日期"回归）
 └── manual/                # ⚠️ 手动/联调脚本：会真的调用 LLM、小红书 MCP、数据库
     ├── manual_summary_flow.py   # 跑一遍"意图识别 → 帖子分析 → 最终总结"
     ├── manual_intent_notes.py   # 意图识别 + 小红书搜索 + 多 Agent 并发分析
@@ -48,4 +51,5 @@ python -m test.manual.manual_mcp_search
 2. `services/rag/retrieval.py`：`resolve_visibility()` / `rrf_fuse()` / `finalize_ranking()`
    （纯函数，覆盖 own/public/own_or_public 的可见性分支）
 3. `services/summary_task.py`：任务幂等、事件重放、客户端断开后继续（用 fake 生成器）
-4. `services/chat_service.py`：三种模式（normal/history/public）的分流
+4. `services/xhs_manager.py`：实例启停与并发上限（用 fake subprocess）
+5. `controller/xhs_routes.py`：登录/状态接口（搭 FakeManager）

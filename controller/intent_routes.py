@@ -4,6 +4,7 @@ from typing import List
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from auth import get_current_user
 from functions.get_intent import get_user_intent
 from utils.redis_storage import RedisMemory
 from utils.toJson import clean_intent
@@ -39,9 +40,10 @@ class RecognizeResponse(BaseModel):
 
 
 @router.post("/recognize", response_model=RecognizeResponse)
-async def recognize_intent(req: IntentRequest, redis: RedisMemory = Depends(get_redis)):
+async def recognize_intent(req: IntentRequest, redis: RedisMemory = Depends(get_redis),
+                           current_user: dict = Depends(get_current_user)):
     """
-    阶段1：意图识别
+    阶段1：意图识别（需要登录，避免匿名刷 LLM）
     输入用户需求 → 生成 task_id + 识别意图 → 返回给前端展示确认
     """
     task_id, intent = await get_user_intent(req.query, redis)

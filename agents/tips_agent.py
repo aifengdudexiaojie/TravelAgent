@@ -12,19 +12,22 @@ from utils.skill_loader import load_skill
 
 class GeneralAgent(BaseAgent):
 
-    def __init__(self, model_name: str, role: str, tools=None):
+    def __init__(self, model_name: str, role: str, tools=None, skill_vars: dict | None = None):
         """
         Args:
             model_name: 使用的api接口厂商 dee/kimi
             role: 需要加载的skill文件名（如 "Intent"、"travel-post-filter"）
                   会自动在 skills/ 目录下查找对应的 .md 文件
+            tools: 可选的 function calling 工具定义
+            skill_vars: skill 模板占位符（如 {"CURRENT_DATE": "2026-09-15"}）——
+                        每次实例化都会重新读文件并替换，避免时间类变量被"冻结"
         """
         self.model_name = model_name
         self.tools = tools
         self.role = role
         super().__init__(
             model=self.model_name,
-            system_prompt=load_skill(role),
+            system_prompt=load_skill(role, variables=skill_vars),
         )
 
     # async def chat(self, messages: list[dict]) -> str:

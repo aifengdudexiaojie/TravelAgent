@@ -10,6 +10,7 @@ from controller.guide_routes import router as guide_router
 from controller.share_routes import router as share_router
 from controller.user_routes import router as user_router
 from controller.dev_routes import router as dev_router
+from controller.xhs_routes import router as xhs_router
 
 api_router = APIRouter()
 api_router.include_router(intent_router)
@@ -20,3 +21,4 @@ api_router.include_router(guide_router)
 api_router.include_router(share_router)
 api_router.include_router(user_router)
 api_router.include_router(dev_router)
+api_router.include_router(xhs_router)

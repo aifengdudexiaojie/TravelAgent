@@ -14,7 +14,7 @@ from pathlib import Path
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 
 
-def load_skill(skill_path: str | Path) -> str:
+def load_skill(skill_path: str | Path, variables: dict | None = None) -> str:
     """
     读取 skill 文件并返回可直接作为 system prompt 的内容。
 
@@ -24,6 +24,10 @@ def load_skill(skill_path: str | Path) -> str:
                     - 绝对路径（以 / 或盘符开头）
                     - 相对路径（相对于当前工作目录）
                     - 文件名（自动在 skills/ 目录下查找）
+        variables:  模板变量，用于替换正文里的 `{{KEY}}` 占位符（如 `{{CURRENT_DATE}}`）。
+                    **每次调用都会重新读文件、重新替换**，所以时间类变量不会"冻结"在
+                    第一次加载的值上（历史上踩过坑：把"当前日期"直接写进 skill 正文，
+                    导致模型永远以那个固定日期推算）。
 
     Returns:
         去除 YAML frontmatter 后纯文本内容（首尾空白已清理）。
@@ -36,6 +40,9 @@ def load_skill(skill_path: str | Path) -> str:
     raw = path.read_text(encoding="utf-8")
     body = _strip_frontmatter(raw)
 
+    if variables:
+        body = render_template(body, variables)
+
     if not body.strip():
         raise ValueError(
             f"Skill 文件 '{skill_path}' 去除 frontmatter 后内容为空，"
@@ -43,6 +50,20 @@ def load_skill(skill_path: str | Path) -> str:
         )
 
     return body.strip()
+
+
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+
+
+def render_template(text: str, variables: dict) -> str:
+    """替换 `{{KEY}}` 占位符；未提供的键原样保留（便于发现漏注入的变量）。"""
+    def _sub(match: re.Match) -> str:
+        key = match.group(1)
+        if key in variables and variables[key] is not None:
+            return str(variables[key])
+        return match.group(0)
+
+    return _PLACEHOLDER_RE.sub(_sub, text)
 
 
 def _resolve_path(skill_path: str | Path) -> Path:

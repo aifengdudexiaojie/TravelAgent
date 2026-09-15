@@ -43,7 +43,14 @@ def log_file_path() -> pathlib.Path:
 
 
 def _enabled() -> bool:
-    return os.getenv("BACKEND_LOG_ENDPOINT", "true").strip().lower() in ("1", "true", "yes", "on")
+    """主应用是否暴露日志接口。
+
+    默认 **关闭**：日志里含请求路径、task_id、用户信息，挂在主应用上等于
+    "任何登录用户都能看全站日志"。排查问题请用独立日志服务
+    （log_viewer.py：单独端口 + 固定口令，仅你自己可访问）。
+    本地调试想临时打开：BACKEND_LOG_ENDPOINT=true。
+    """
+    return os.getenv("BACKEND_LOG_ENDPOINT", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _read_tail(path: pathlib.Path, max_lines: int) -> List[str]:
@@ -71,14 +78,21 @@ def _event(event_type: str, data) -> str:
     return f"data: {json.dumps({'type': event_type, 'data': data}, ensure_ascii=False)}\n\n"
 
 
-@router.get("/logs")
+def require_enabled() -> None:
+    """依赖：功能关闭时直接 404（放在鉴权之前，语义更明确）。
+
+    这样无论是否登录，关闭状态下都统一返回 404，而不是"没登录 401、登录了才 404"。
+    """
+    if not _enabled():
+        raise HTTPException(status_code=404, detail="日志接口已关闭（BACKEND_LOG_ENDPOINT=false）")
+
+
+@router.get("/logs", dependencies=[Depends(require_enabled)])
 async def read_logs(
     tail: int = Query(300, ge=1, le=MAX_TAIL),
     current_user: dict = Depends(get_current_user),
 ):
     """返回日志文件最近 tail 行（供页面首次加载/手动刷新）。"""
-    if not _enabled():
-        raise HTTPException(status_code=404, detail="日志接口已关闭（BACKEND_LOG_ENDPOINT=false）")
     path = log_file_path()
     lines = _read_tail(path, tail)
     return {
@@ -89,15 +103,12 @@ async def read_logs(
     }
 
 
-@router.get("/logs/stream")
+@router.get("/logs/stream", dependencies=[Depends(require_enabled)])
 async def stream_logs(
     tail: int = Query(200, ge=0, le=MAX_TAIL),
     current_user: dict = Depends(get_current_user),
 ):
     """SSE 实时跟随日志文件：先补最近的 tail 行，再持续推送新增内容。"""
-    if not _enabled():
-        raise HTTPException(status_code=404, detail="日志接口已关闭（BACKEND_LOG_ENDPOINT=false）")
-
     async def event_generator():
         path = log_file_path()
         for line in _read_tail(path, tail):

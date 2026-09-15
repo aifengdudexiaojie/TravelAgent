@@ -51,7 +51,8 @@
 ```
 TravelAgent/
 ├── main.py                  # FastAPI 入口
-├── run_backend.py           # 启动后端（控制台 + logs/backend.log 双写，前端可看日志）
+├── run_backend.py           # 启动后端（控制台 + logs/backend.log 双写）
+├── log_viewer.py            # 独立日志查看服务（单独端口 + .env 里的固定口令）
 ├── check_secrets.py         # 上传前密钥/凭据自查
 ├── fix_guide_owner.py       # 存量攻略归属修复（默认 dry-run）
 ├── ingest_by_es_transfer.py # CLI：攻略入库
@@ -90,7 +91,8 @@ TravelAgent/
 ├── functions/               # 核心流程（意图、帖子分析、总结）
 ├── skills/                  # Agent 提示词
 ├── utils/                   # 工具函数
-├── docs/                    # 设计与代码地图（rag-code-map.md）
+├── docs/                    # 文档：rag-code-map.md / deployment-runbook.md / deployment-audit.md / xhs-multi-user.md
+├── deploy/                  # 部署物料：nginx.conf / systemd 单元 / backup.sh / check.sh
 ├── logs/                    # 运行日志（已 gitignore）
 ├── xiaohongshu_mcp_client.py
 ├── start_mcp.py
@@ -131,11 +133,11 @@ cp .env.example .env
 pip install -r requirements.txt
 python run_backend.py
 # 服务启动于 http://localhost:8088
-# 控制台输出会同时写入 logs/backend.log，可在前端「🖥️ 后端日志」页实时查看
+# 控制台输出会同时写入 logs/backend.log（查看方式见「🖥️ 查看后端日志」一节）
 ```
 
 > 也可以直接用 `python -m uvicorn main:app --port 8088`，但那样输出只在当前终端里，
-> 前端的日志页会读不到内容。
+> 独立日志服务（log_viewer.py）读的是日志文件，会看不到内容。
 
 ### 4. 启动前端
 
@@ -174,28 +176,62 @@ python start_mcp.py
 - 在"我的攻略"中评价并公开攻略（**需先评价才能公开**）
 - 公开后出现在"他人分享"页面，其他用户可浏览、参考
 
+### 小红书登录（生成攻略的前置条件）
+- 攻略页顶部有**状态灯 + 「登录小红书」按钮**：未登录时按钮为红色、输入框禁用，无法开始规划
+- 点按钮 → 后端为该用户启动**自己的** MCP 实例（独立工作目录 + 独立端口）并弹出扫码窗口
+- 登录成功后状态灯变绿（显示小红书用户名），即可生成攻略
+- 一人一实例：cookies 互不覆盖、账号互不干扰；空闲 30 分钟自动回收
+- 详见 **`docs/xhs-multi-user.md`**（含云端 Linux 部署方案与容量估算）
+
 ### 并发控制
-- `XHS_MAX_CONCURRENT` 控制同时使用小红书 MCP 的用户数
-- 超出时返回等待提示
+- `XHS_MAX_CONCURRENT`：同时使用小红书 MCP 的用户数上限（共享模式）
+- `XHS_MAX_INSTANCES`：多用户模式下同时在线实例上限（默认 3），超出会提示稍后再试
 
 ## 🧪 测试
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest              # 12 个单测，不依赖任何外部服务（ES/LLM/MCP 全部 mock）
+python -m pytest              # 28 个单测，不依赖任何外部服务（ES/LLM/MCP/Redis 全部 mock）
 ```
+
+覆盖：认证流程、聊天三模式与 SSE 端点、**分析任务归属与越权防护**、
+小红书多用户管理（目录隔离/端口分配/查状态不拉实例）、RAG 可见性映射。
 
 `test/manual/` 下是手动/联调脚本（会真的调用 LLM、小红书 MCP、数据库），
 `pytest.ini` + `test/conftest.py` 已做双重保护，不会被自动收集。详见 `test/README.md`。
 
-## 🖥️ 查看后端日志
+## 🖥️ 查看后端日志（独立服务 + 固定口令）
 
-后端用 `python run_backend.py` 启动时，stdout/stderr（含 uvicorn 访问日志与代码里的 print）
-会同时写入 `logs/backend.log`。三种查看方式：
+日志里含请求路径、task_id、用户信息，因此**不挂在主应用上**（`/api/dev/logs` 默认关闭），
+而是独立的服务：
 
-1. 前端顶部「🖥️ 后端日志」页（SSE 实时跟随，支持过滤/暂停/清屏）
-2. `Get-Content logs\backend.log -Wait -Tail 50`
-3. 直接打开 `logs/backend.log`
+```bash
+python log_viewer.py                     # 默认 http://127.0.0.1:8099，用户名 admin
+LOG_VIEWER_PASSWORD='你的口令' python log_viewer.py
+# 服务器上想让内网能访问：
+LOG_VIEWER_HOST=0.0.0.0 LOG_VIEWER_PASSWORD='你的口令' python log_viewer.py
+```
+
+浏览器打开 → HTTP Basic 输入 `.env` 里的 `LOG_VIEWER_USER / LOG_VIEWER_PASSWORD` → 实时跟随日志
+（支持在多个文件间切换、关键字过滤、暂停/清屏）。
+
+也可以直接看文件：`Get-Content logs\backend.log -Wait -Tail 50`，或服务器上 `journalctl -u travel-agent-api -f`。
+前端界面**不再**提供日志页（避免任何登录用户都能看全站日志）。
+
+## ☁️ 云端部署
+
+* **`docs/deployment-runbook.md`** —— 可照做的部署流程（Ubuntu 单机 + Nginx + HTTPS + systemd + 备份 + 验收）
+* **`docs/deployment-audit.md`** —— 多用户场景的现状评估、P0/P1 清单、结论
+* **`deploy/`** —— `nginx.conf` / 两个 systemd 单元 / `backup.sh` / `check.sh`（部署后验收）
+
+关键约束：**必须单副本单 worker**（分析任务表与小红书实例表都在进程内）。
+
+```bash
+# 只跑依赖服务（PG/Qdrant/Redis/ES）
+docker compose up -d redis qdrant
+# 跑后端 + 独立日志服务
+docker compose --profile app up -d api log-viewer
+```
 
 ## 🔑 环境变量
 
@@ -215,10 +251,15 @@ python -m pytest              # 12 个单测，不依赖任何外部服务（ES/
 | `EMBEDDING_BASE_URL` | Embedding API 地址 |
 | `EMBEDDING_MODEL` | Embedding 模型名 |
 | `EMBEDDING_DIM` | 向量维度 |
-| `XHS_MAX_CONCURRENT` | 小红书 MCP 最大并发 |
+| `XHS_MAX_CONCURRENT` | 小红书 MCP 最大并发（共享模式） |
+| `XHS_MULTI_USER` | 是否一人一实例（默认 true；false = 共享一个账号） |
+| `XHS_MAX_INSTANCES` | 多用户模式同时在线实例上限（默认 3） |
+| `CORS_ORIGINS` | 允许跨域的前端来源（逗号分隔，别用 `*`） |
+| `APP_ENV` | `development` / `production`（production 会对危险默认值报错） |
+| `LOG_VIEWER_PASSWORD` | 独立日志服务的固定口令（**务必修改**） |
 | `RAG_CHAT_VISIBILITY` | **历史模式**检索范围：`own`（默认，只检索自己的）/ `own_or_public` / `public` / `all`；公开模式固定"自己的 + 他人公开" |
 | `RAG_AUTO_INGEST` | 生成的攻略是否自动写入知识库（默认 true） |
-| `BACKEND_LOG_FILE` | 后端日志文件路径（默认 `logs/backend.log`，前端「后端日志」页读它） |
+| `BACKEND_LOG_FILE` | 后端日志文件路径（默认 `logs/backend.log`，独立日志服务读它） |
 
 ## 📡 API 接口
 

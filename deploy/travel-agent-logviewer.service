@@ -1,0 +1,42 @@
+# ================================================================================
+# systemd 单元：独立日志查看服务（单独端口 + .env 里的固定口令）
+#
+# 安装：
+#   sudo cp deploy/travel-agent-logviewer.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now travel-agent-logviewer
+#
+# 访问方式（推荐）：不开放公网端口，用 SSH 隧道
+#   ssh -L 8099:127.0.0.1:8099 travelagent@<服务器>
+#   然后浏览器打开 http://127.0.0.1:8099，用户名/口令来自 .env 的
+#   LOG_VIEWER_USER / LOG_VIEWER_PASSWORD
+#
+# 若确实要让内网直接访问：在 .env 里设 LOG_VIEWER_HOST=0.0.0.0，
+# 并在安全组/防火墙里只放行内网网段。
+# ================================================================================
+[Unit]
+Description=AI Travel Agent Log Viewer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=travelagent
+Group=travelagent
+WorkingDirectory=/opt/travelagent
+
+ExecStart=/opt/travelagent/.venv/bin/python log_viewer.py
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=travel-logviewer
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+# 只读挂载日志目录即可
+ReadOnlyPaths=/opt/travelagent/logs
+
+[Install]
+WantedBy=multi-user.target

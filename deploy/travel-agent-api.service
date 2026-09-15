@@ -1,0 +1,48 @@
+# ================================================================================
+# systemd 单元：后端 API
+#
+# 安装：
+#   sudo cp deploy/travel-agent-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now travel-agent-api
+#
+# ⚠️ 关键约束：**不要加 --workers**。
+#    分析任务表（services/summary_task.py）与小红书实例表（services/xhs_manager.py）
+#    都是进程内状态，多 worker 会丢任务、重复起实例（见 docs/deployment-audit.md）。
+# ================================================================================
+[Unit]
+Description=AI Travel Agent API (FastAPI)
+After=network-online.target docker.service
+Wants=network-online.target
+# 依赖服务没起来时稍后重试即可，这里只做"顺序"提示
+
+[Service]
+Type=simple
+User=travelagent
+Group=travelagent
+WorkingDirectory=/opt/travelagent
+
+# 配置全部来自项目根的 .env（run_backend.py 自己会加载，无需 EnvironmentFile）
+# 如需用系统环境变量覆盖 .env，可打开下面两行：
+# EnvironmentFile=-/opt/travelagent/.env
+# Environment=APP_ENV=production
+
+ExecStart=/opt/travelagent/.venv/bin/python run_backend.py
+Restart=always
+RestartSec=5
+# 优雅退出：会停止所有小红书 MCP 实例并关闭连接池，别设太短
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+# 日志：run_backend.py 已双写到 logs/backend.log，journald 里也留一份
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=travel-api
+
+# 安全加固（按需放宽）
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/travelagent/logs /opt/travelagent/xiaohongshumcp
+
+[Install]
+WantedBy=multi-user.target

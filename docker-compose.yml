@@ -102,6 +102,68 @@ services:
       elasticsearch:
         condition: service_healthy
 
+  # ---------- 后端 API（profile: app） ----------
+  # ⚠️ 单副本：分析任务表/小红书实例表都在进程内，不要 scale 到多副本，
+  #    也不要给 uvicorn 加 --workers（详见 docs/deployment-audit.md）
+  api:
+    build: .
+    image: travel-agent-api
+    container_name: travel-api
+    profiles: ["app"]
+    env_file: [.env]
+    environment:
+      - APP_ENV=${APP_ENV:-production}
+      - BACKEND_HOST=0.0.0.0
+      - BACKEND_PORT=8088
+      - BACKEND_LOG_FILE=/app/logs/backend.log
+      # 容器内互相访问：把 .env 里的 localhost 换成服务名
+      - DATABASE_URL=${DATABASE_URL_DOCKER:-postgresql://postgres:postgres@postgres:5432/travel_agent}
+      - REDIS_URL=${REDIS_URL_DOCKER:-redis://redis:6379/0}
+      - QDRANT_URL=${QDRANT_URL_DOCKER:-http://qdrant:6333}
+      - ES_URL=${ES_URL_DOCKER:-http://elasticsearch:9200}
+      # 前端域名（CORS 白名单，别用 *）
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173}
+      # 小红书 MCP 是本地 exe + 真浏览器，容器里默认关掉多用户实例
+      - XHS_MULTI_USER=${XHS_MULTI_USER:-false}
+      - XHS_MCP_URL=${XHS_MCP_URL:-http://host.docker.internal:18060/mcp}
+    ports:
+      - "8088:8088"
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8088/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------- 独立日志查看服务（profile: app） ----------
+  # 单独端口 + 固定口令，只有你能看日志；主应用的日志接口默认是关闭的
+  log-viewer:
+    build: .
+    image: travel-agent-api
+    container_name: travel-logs
+    profiles: ["app"]
+    command: ["python", "log_viewer.py"]
+    environment:
+      - LOG_VIEWER_HOST=0.0.0.0
+      - LOG_VIEWER_PORT=8099
+      - LOG_VIEWER_USER=${LOG_VIEWER_USER:-admin}
+      - LOG_VIEWER_PASSWORD=${LOG_VIEWER_PASSWORD:-change-me-please}
+      - BACKEND_LOG_FILE=/app/logs/backend.log
+    ports:
+      # 生产建议只绑内网/跳板机可达的地址：把 0.0.0.0 换成内网 IP
+      - "8099:8099"
+    volumes:
+      - ./logs:/app/logs:ro
+    restart: unless-stopped
+
 volumes:
   pg_data:
     driver: local

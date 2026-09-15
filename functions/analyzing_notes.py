@@ -11,12 +11,15 @@ from utils.toJson import to_json
 # 用于分析单个地点的旅游攻略
 # 【修改①】新增 task_id 参数：由 summary_from_notes 传入，保证与意图识别同任务号
 # 【修改①】改为 async generator：帖子循环内 yield 进度事件，末尾 yield 结果
-async def analyze_notes(query: str, location: str, limit: int, redis: RedisMemory, task_id: int):
+async def analyze_notes(query: str, location: str, limit: int, redis: RedisMemory, task_id: int,
+                       mcp_url: str | None = None):
+    """分析某个地点的笔记；mcp_url 指定该用户自己的小红书 MCP 实例。"""
     timer = StepTimer(f"📍 开始分析地点: {location}")
     # 【修复】同步 MCP 调用用 to_thread 包裹，避免阻塞事件循环（否则 SSE 流卡住）
     # 首先检查登录状态
     try:
-        ifLogin = await async_timeout(asyncio.to_thread(show_status), 30)
+        ifLogin = await async_timeout(
+            asyncio.to_thread(show_status, mcp_url), 30)
     except asyncio.TimeoutError:
         trace("⚠️ 登录检测超时(30s)")
         ifLogin = True
@@ -28,7 +31,8 @@ async def analyze_notes(query: str, location: str, limit: int, redis: RedisMemor
 
     # 根据query进行mcp查询所有帖子
     try:
-        feeds = await async_timeout(asyncio.to_thread(search_notes, query, 5), 100)
+        feeds = await async_timeout(
+                asyncio.to_thread(search_notes, query, 5, mcp_url), 100)
     except asyncio.TimeoutError:
         trace("⚠️ 搜索帖子超时(100s)，跳过该地点")
         yield {"type": "address_result", "data": {"f_post_res": "", "img_notes": [], "status": "timeout"}}
@@ -56,7 +60,7 @@ async def analyze_notes(query: str, location: str, limit: int, redis: RedisMemor
 
         try:
             detail = await async_timeout(
-                asyncio.to_thread(get_note_detail, f["id"], f["xsecToken"], False),
+                asyncio.to_thread(get_note_detail, f["id"], f["xsecToken"], False, mcp_url),
                 45,
             )
         except asyncio.TimeoutError:

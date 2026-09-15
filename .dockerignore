@@ -1,0 +1,34 @@
+# 构建镜像时排除的内容（密钥、依赖、日志、二进制、前端产物）
+.git
+.gitignore
+.github
+.venv
+venv
+env
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# 密钥与本地配置
+.env
+.env.*
+!.env.example
+
+# 日志与运行产物
+logs/
+*.log
+
+# 前端依赖与构建产物（前端单独部署，见 README）
+vue/node_modules
+vue/dist
+node_modules
+
+# 小红书 MCP 二进制与登录凭据（镜像里不需要，云端另有方案）
+xiaohongshumcp/
+
+# 文档/测试（镜像里不需要，想保留可自行删除下面三行）
+test/
+docs/
+*.md

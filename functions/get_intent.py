@@ -43,23 +43,48 @@ async def get_user_intent_stream(input_text: str) -> AsyncIterator[str]:
 # ================================================================
 
 
+def _new_task_id() -> int:
+    """生成 task_id。
+
+    原来是 random.randint(0, 10000)：只有 1 万个可能值，可以被枚举/撞号，
+    在多用户环境下等于"别人的分析进度能被猜出来读"。改成 48 位随机（≈2.8e14），
+    仍能安全放进 JS 的 Number（< 2^53，前端类型是 number）。
+    """
+    import uuid
+    return int(uuid.uuid4().hex[:12], 16)
+
+
 async def get_user_intent(input_text: str, redis: RedisMemory) -> tuple[int, dict]:
     """
     阶段1：意图识别。
     生成 task_id → 调用 Intent Agent → 存入 redis → 返回 (task_id, 结构化意图)
 
+    日期处理（曾经出错的地方）：
+      · skill 里的 `{{CURRENT_DATE}}` 等占位符在这里注入**真实当前日期**，
+        不再让"当前日期"写死在提示词里（否则相对日期永远基于那个固定日期）；
+      · 用户消息里再带一份 `current_date`，双重保险；
+      · 返回前用 services/intent_dates.normalize_intent_dates() 做确定性归一化
+        （优先用代码解析"明天/下周/8月3日"，并按 days 反算 end_date）。
+
     Returns:
         (task_id, intent_content) 元组
     """
-    task_id = random.randint(0, 10000)
+    task_id = _new_task_id()
     try:
-        intent_agent = GeneralAgent("deepseek", "Intent")
-        input_msg = f"'task_id':{task_id}, 'input':{input_text}"
+        from services.intent_dates import normalize_intent_dates, skill_vars, today
+
+        reference = today()
+        vars_ = skill_vars(reference)
+
+        intent_agent = GeneralAgent("deepseek", "Intent", skill_vars=vars_)
+        input_msg = (f"'task_id':{task_id}, 'current_date':'{reference.isoformat()}', "
+                     f"'weekday':'{vars_['WEEKDAY']}', 'input':{input_text}")
         messages = [{"role": "user", "content": input_msg}]
 
         json_response = await intent_agent.chat(messages)
         if not json_response or not json_response.strip():
-            return task_id, _fallback_intent(input_text)
+            return task_id, normalize_intent_dates(_fallback_intent(input_text),
+                                                   input_text, reference)
 
         try:
             # 【修复】用 to_json 替代 json.loads：自动去掉 ```json ``` 代码块标记
@@ -68,10 +93,11 @@ async def get_user_intent(input_text: str, redis: RedisMemory) -> tuple[int, dic
             redis.add_message(task_id, "intent", 0, tojson)
             parsed = clean_intent(tojson)
             if isinstance(parsed, dict):
-                return task_id, parsed
+                return task_id, normalize_intent_dates(parsed, input_text, reference)
         except json.JSONDecodeError:
             # AI 返回了非 JSON 文本，兜底返回结构化的占位数据
-            return task_id, _fallback_intent(input_text, raw=json_response)
+            return task_id, normalize_intent_dates(
+                _fallback_intent(input_text, raw=json_response), input_text, reference)
 
     except ImportError:
         # agents.tips_agent 尚未实现，返回 Mock 数据

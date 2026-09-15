@@ -1,8 +1,11 @@
 """
-小红书 MCP 服务启动脚本
+小红书 MCP 服务启动脚本（共享单实例模式）
 
-自动查找 xiaohongshu-mcp 可执行文件并启动服务。
-支持与 FastAPI 后端同时运行。
+⚠️ 注意：**多用户模式（XHS_MULTI_USER=true，默认）不需要跑这个脚本** ——
+   应用会在用户点「登录小红书」时按 user_id 各自启动独立实例（见
+   services/xhs_manager.py 与 docs/xhs-multi-user.md）。
+
+本脚本用于"共享一个账号"的本地/演示场景：启动一个默认实例（:18060）。
 """
 
 import os
@@ -11,8 +14,10 @@ import sys
 import time
 from pathlib import Path
 
-MCP_DIR = Path(__file__).parent / "xiaohongshu-mcp"
-MCP_LOG = Path(__file__).parent / "mcp_server.log"
+# ⚠️ 真实目录名是 xiaohongshumcp（没有连字符）——原来的 xiaohongshu-mcp 是错的，
+#    导致这个脚本永远找不到可执行文件。
+MCP_DIR = Path(__file__).parent / "xiaohongshumcp"
+MCP_LOG = Path(__file__).parent / "logs" / "mcp_server.log"
 
 
 def find_exe() -> Path | None:
@@ -37,11 +42,12 @@ def start_mcp() -> subprocess.Popen | None:
     """启动 xiaohongshu-mcp 服务，返回进程对象"""
     exe = find_exe()
     if not exe:
-        print("❌ 未找到 xiaohongshu-mcp 可执行文件")
+        print(f"❌ 未找到 xiaohongshu-mcp 可执行文件（查找目录：{MCP_DIR}）")
         print("请从 https://github.com/xpzouying/xiaohongshu-mcp/releases 下载")
         print(f"并解压到 {MCP_DIR} 目录")
         return None
 
+    MCP_LOG.parent.mkdir(parents=True, exist_ok=True)
     print(f"🚀 启动 xiaohongshu-mcp: {exe}")
     log_fp = open(MCP_LOG, "a", encoding="utf-8")
     proc = subprocess.Popen(

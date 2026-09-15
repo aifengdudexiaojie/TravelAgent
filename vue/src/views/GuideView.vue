@@ -5,18 +5,29 @@
  * 状态与 SSE 订阅全部由 stores/plan.ts 持有，本组件只负责渲染：
  *  · 切到别的 Tab 再回来 → 进度仍在继续（组件销毁不影响 store 里的订阅）；
  *  · 刷新页面 → onMounted 里的 resume() 重新挂到后端同一 task_id 上追平进度。
+ *
+ * 前置条件：必须已登录自己的小红书账号（否则拿不到真实的小红书攻略数据），
+ * 顶部「小红书」状态条负责登录与状态展示，未登录时禁止开始规划。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { apiErrorMessage, guideApi } from '@/lib/api'
 import { usePlanStore } from '@/stores/plan'
 import PlannerForm from '@/components/PlannerForm.vue'
 import IntentConfirm from '@/components/IntentConfirm.vue'
 import AnalyzeProgress from '@/components/AnalyzeProgress.vue'
 import FinalSummary from '@/components/FinalSummary.vue'
+import XhsLoginBar from '@/components/XhsLoginBar.vue'
 
 const plan = usePlanStore()
 const savingGuide = ref(false)
 const saveError = ref('')
+const xhsLoggedIn = ref(false)
+
+/** 未登录小红书时禁止开始规划 */
+const blockedReason = computed(() => {
+  if (xhsLoggedIn.value) return ''
+  return '请先点击右上角「登录小红书」扫码登录你自己的账号，然后才能生成攻略'
+})
 
 onMounted(() => {
   // 刷新/切页回来：如果后端任务还在跑，重新挂上并追平进度
@@ -53,30 +64,37 @@ function resetAll() {
 
 <template>
   <div class="space-y-4">
-    <!-- 顶部：标题 + 实时进度（切页回来也能看到在跑） -->
-    <div class="flex items-center justify-between">
+    <!-- 顶部：标题 + 小红书登录状态 + 实时进度 -->
+    <div class="flex flex-wrap items-center justify-between gap-2">
       <h2 class="text-lg font-bold text-gray-800">🗺️ 生成旅游攻略</h2>
-      <div
-        v-if="plan.progressText"
-        class="flex items-center gap-2 text-xs px-3 py-1 rounded-full border"
-        :class="plan.stage === 'done'
-          ? 'bg-green-50 border-green-200 text-green-700'
-          : 'bg-blue-50 border-blue-200 text-blue-700'"
-      >
-        <span
-          v-if="plan.busy"
-          class="inline-block w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"
-        ></span>
-        {{ plan.progressText }}
+      <div class="flex flex-wrap items-center gap-2">
+        <XhsLoginBar @update:logged-in="xhsLoggedIn = $event" />
+        <div
+          v-if="plan.progressText"
+          class="flex items-center gap-2 text-xs px-3 py-1 rounded-full border"
+          :class="plan.stage === 'done'
+            ? 'bg-green-50 border-green-200 text-green-700'
+            : 'bg-blue-50 border-blue-200 text-blue-700'"
+        >
+          <span
+            v-if="plan.busy"
+            class="inline-block w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"
+          ></span>
+          {{ plan.progressText }}
+        </div>
       </div>
     </div>
 
     <!-- ① 输入阶段 -->
     <div v-if="plan.stage === 'input'" class="bg-white/80 backdrop-blur-sm rounded-xl shadow-lg p-6">
-      <p class="text-sm text-gray-500 mb-4">输入你的旅行需求，例如："去成都玩3天，预算3000，节奏别太赶"</p>
+      <p class="text-sm text-gray-500 mb-4">
+        输入你的旅行需求，例如："去成都玩3天，预算3000，节奏别太赶"
+        <span class="text-gray-400">（攻略内容来自小红书真实笔记，需要先登录你自己的账号）</span>
+      </p>
       <PlannerForm
         v-model="plan.userQuery"
         :is-planning="plan.isRecognizing"
+        :blocked-reason="blockedReason"
         @submit="(text: string) => plan.recognize(text)"
       />
     </div>

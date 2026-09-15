@@ -108,6 +108,7 @@ class SummaryTask:
 
     task_id: int
     owner: Dict[str, Any] = field(default_factory=dict)
+    owner_user_id: str = ""                  # 归属用户：接口鉴权 + 多用户 MCP 实例都靠它
     status: str = "running"                  # running | done | error | cancelled
     events: List[Dict[str, Any]] = field(default_factory=list)
     final_summary: Any = None
@@ -221,10 +222,13 @@ async def _run_summary_task(task: SummaryTask) -> None:
     from services.rag.validate import RagValidationError, SummaryFormatError
     from utils.redis_storage import RedisMemory
 
-    logger.info("分析任务开始 task_id=%s", task.task_id)
+    # 多用户模式下，用该任务归属用户自己的小红书 MCP 实例（一人一实例、cookies 隔离）
+    from services.xhs_manager import mcp_url_for
+    mcp_url = mcp_url_for(task.owner_user_id)
+    logger.info("分析任务开始 task_id=%s user=%s mcp=%s", task.task_id, task.owner_user_id, mcp_url)
     try:
         redis = RedisMemory()
-        async for event in summary_from_notes(task.task_id, redis):
+        async for event in summary_from_notes(task.task_id, redis, mcp_url=mcp_url):
             etype = event.get("type")
             data = event.get("data")
             if etype == "done":
@@ -264,8 +268,13 @@ async def _run_summary_task(task: SummaryTask) -> None:
         await task.close("error", str(exc))
 
 
-def start_summary_task(task_id: int, owner: Optional[Dict[str, Any]] = None) -> SummaryTask:
-    """幂等启动任务：已存在（跑着或已结束）则直接返回，不会重复分析。"""
+def start_summary_task(task_id: int, owner: Optional[Dict[str, Any]] = None,
+                       owner_user_id: str = "") -> SummaryTask:
+    """幂等启动任务：已存在（跑着或已结束）则直接返回，不会重复分析。
+
+    owner_user_id 必须由**鉴权后的当前用户**传入：它既用于接口归属校验（防止
+    越权读取别人的任务），也用于分配该用户自己的小红书 MCP 实例。
+    """
     task_id = int(task_id)
     existing = _TASKS.get(task_id)
     if existing is not None:
@@ -274,33 +283,53 @@ def start_summary_task(task_id: int, owner: Optional[Dict[str, Any]] = None) -> 
             for key, value in owner.items():
                 if value is not None:
                     existing.owner[key] = value
+        if owner_user_id and not existing.owner_user_id:
+            existing.owner_user_id = owner_user_id
         return existing
 
     _purge_stale()
-    task = SummaryTask(task_id=task_id, owner=dict(owner or {}))
+    task = SummaryTask(task_id=task_id, owner=dict(owner or {}), owner_user_id=owner_user_id or "")
     _TASKS[task_id] = task
     task.runner = _run_analysis(task)
     return task
 
 
-async def subscribe_task(task_id: int, from_index: int = 0) -> AsyncIterator[Dict[str, Any]]:
-    """按 task_id 订阅进度；任务不存在则抛 KeyError 由路由转 404。"""
+def assert_task_owner(task: "SummaryTask", user_id: Optional[str]) -> None:
+    """校验任务归属；不属于该用户则抛 PermissionError（路由转 403）。
+
+    没有归属用户（老任务/匿名创建）时按"无主"处理：只允许同一个 user_id 明确为空
+    的调用者访问，避免任何人凭 task_id 猜到就能读。
+    """
+    if not task.owner_user_id:
+        return
+    if not user_id or str(user_id) != str(task.owner_user_id):
+        raise PermissionError("无权访问该分析任务")
+
+
+async def subscribe_task(task_id: int, from_index: int = 0,
+                         user_id: Optional[str] = None) -> AsyncIterator[Dict[str, Any]]:
+    """按 task_id 订阅进度；任务不存在抛 KeyError（路由转 404），越权抛 PermissionError（转 403）。"""
     task = _TASKS.get(int(task_id))
     if task is None:
         raise KeyError(task_id)
+    assert_task_owner(task, user_id)
     async for event in task.subscribe(from_index=from_index):
         yield event
 
 
-def snapshot_task(task_id: int) -> Optional[Dict[str, Any]]:
+def snapshot_task(task_id: int, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     task = _TASKS.get(int(task_id))
-    return task.snapshot() if task is not None else None
+    if task is None:
+        return None
+    assert_task_owner(task, user_id)
+    return task.snapshot()
 
 
-async def cancel_task(task_id: int) -> bool:
+async def cancel_task(task_id: int, user_id: Optional[str] = None) -> bool:
     """取消正在跑的任务（前端"停止分析"用）。"""
     task = _TASKS.get(int(task_id))
     if task is None or task.finished or task.runner is None:
         return False
+    assert_task_owner(task, user_id)
     task.runner.cancel()
     return True

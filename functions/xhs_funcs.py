@@ -1,10 +1,10 @@
 import json
 
-from xiaohongshu_mcp_client import _batch_call
+from xiaohongshu_mcp_client import MCP_URL, _batch_call
 
 
-def search_notes(keyword: str, limit: int):
-    """搜索小红书笔记"""
+def search_notes(keyword: str, limit: int, mcp_url: str | None = None):
+    """搜索小红书笔记（mcp_url 指定用哪个 MCP 实例，None=默认实例）"""
     print(f"\n{'='*50}")
     print(f"  搜索: {keyword}")
     print(f"{'='*50}")
@@ -12,7 +12,7 @@ def search_notes(keyword: str, limit: int):
     result = _batch_call("tools/call", {
         "name": "search_feeds",
         "arguments": {"keyword": keyword},
-    })
+    }, base_url=mcp_url or MCP_URL)
 
     if isinstance(result, list):
         feeds = result
@@ -41,7 +41,8 @@ def search_notes(keyword: str, limit: int):
     return feeds[:limit]
 
 
-def get_note_detail(note_id: str, xsec_token: str, load_comments: bool = False):
+def get_note_detail(note_id: str, xsec_token: str, load_comments: bool = False,
+                    mcp_url: str | None = None):
     """
     获取笔记详情（正文、图片、评论等）
 
@@ -73,7 +74,7 @@ def get_note_detail(note_id: str, xsec_token: str, load_comments: bool = False):
     result = _batch_call("tools/call", {
         "name": "get_feed_detail",
         "arguments": arguments,
-    })
+    }, base_url=mcp_url or MCP_URL)
 
     # if isinstance(result, dict):
     #     # 实际返回结构: result.data.note.{...}
@@ -103,10 +104,11 @@ def get_note_detail(note_id: str, xsec_token: str, load_comments: bool = False):
     return result
 
 
-def show_status():
+def show_status(mcp_url: str | None = None):
     """检查登录状态，返回是否已登录（True/False）"""
     print("\n--- 登录状态 ---")
-    result = _batch_call("tools/call", {"name": "check_login_status"})
+    result = _batch_call("tools/call", {"name": "check_login_status"},
+                         base_url=mcp_url or MCP_URL)
     if isinstance(result, dict):
         for k, v in result.items():
             print(f"  {k}: {v}")

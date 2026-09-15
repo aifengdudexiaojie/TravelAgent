@@ -14,7 +14,6 @@ const tabs = [
   { path: '/guide', title: '旅游攻略', icon: '🗺️' },
   { path: '/share', title: '旅游分享', icon: '🌍' },
   { path: '/profile', title: '我的', icon: '👤' },
-  { path: '/logs', title: '后端日志', icon: '🖥️' },
 ]
 
 const activeTab = computed(() => route.path)

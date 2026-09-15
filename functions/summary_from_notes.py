@@ -12,7 +12,11 @@ from utils.toJson import to_json
 
 
 # 【修改②】改为 async generator：逐步 yield 进度事件，最后 yield 最终总结
-async def summary_from_notes(task_id, redis: RedisMemory):
+async def summary_from_notes(task_id, redis: RedisMemory, mcp_url: str | None = None):
+    """跑完整个"分析帖子 → 最终总结"流程。
+
+    mcp_url：用哪个小红书 MCP 实例（多用户模式下由 services/xhs_manager 按 user_id 分配）。
+    """
     print(f"进入 总结方法part ---------")
     # 从redis中获取内容
     task_context = redis.get_messages_by_task(task_id)
@@ -55,7 +59,7 @@ async def summary_from_notes(task_id, redis: RedisMemory):
         print(f" 当前查询内容为：{query} ---------")
         # 【修复】单个地点失败不中断整体流程
         try:
-            async for event in analyze_notes(query, loc, 15, redis, task_id):
+            async for event in analyze_notes(query, loc, 15, redis, task_id, mcp_url):
                 if event["type"] == "address_result":
                     f_post_res = event["data"]["f_post_res"]
                     img_notes = event["data"]["img_notes"]

@@ -37,12 +37,6 @@ const routes = [
         component: () => import('@/views/ProfileView.vue'),
         meta: { title: '用户中心', icon: '👤' },
       },
-      {
-        path: 'logs',
-        name: 'Logs',
-        component: () => import('@/views/LogsView.vue'),
-        meta: { title: '后端日志', icon: '🖥️' },
-      },
     ],
   },
 ]

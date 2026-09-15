@@ -197,6 +197,7 @@ services/rag/query.py :: execute_query()  L157     ← 预检 + 连接 + 检索 
 13. **索引已存在时，"新加字段"不会生效**：`ensure_indices()` 对已存在的索引直接跳过 create，于是新字段走 ES 动态映射（`guide_id` 被当成 `text`）。现在 `_apply_new_mapping_fields()` 会补新增字段；但**已存在字段无法原地改类型**，只能靠查询兜底或重建索引。
 14. **攻略文档 `_id` 必须等于文档里的 `guide_id`**：历史上 `save_guide()` 不带 id 索引，ES 自动生成 `_id`，而 `guide_id` 字段是另一个 UUID → "我的攻略列表里能看见，点详情却 404"。现在索引时显式用 `guide_id` 作 `_id`，且 `get_guide()/update_guide()` 走 `_resolve_doc_id()` 兜底（`term` + `match_phrase`，兼容已存的 text 映射老数据）。
 15. **自动写入 RAG 的归属来自请求体**：`POST /api/summary/stream` 必须带 `user_id/username/nickname`（前端 `streamSummary(..., {owner})` 已经带上）；不带就会落到环境变量默认归属（`rag_test_user`），攻略不属于任何人，历史模式也就检索不到。存量错归属用 `fix_guide_owner.py` 修（默认 dry-run，`--apply` 才写入）。
+16. **提示词里不要写死"当前日期"**（意图识别踩过的坑）：`skills/Intent.md` 曾把基准写成 `2026-07-23`，于是"明天出发"永远返回 `2026-07-24`，前端就展示成固定日期。现在 skill 用 `{{CURRENT_DATE}}` 占位符，由 `services/intent_dates.skill_vars()` 在**每次请求**注入真实日期；`load_skill(path, variables=...)` 每次都重新读文件+替换，不存在"变量被缓存冻结"的问题。**新增任何带时间概念的 skill 都照此办理**。
 
 ---
 
@@ -357,13 +358,40 @@ python run_backend.py            # → 控制台 + logs/backend.log
 
 | 方式 | 做法 |
 |------|------|
-| ① 前端页面（推荐） | 顶部 Tab「🖥️ 后端日志」→ 实时跟随（`GET /api/dev/logs/stream`，SSE），支持暂停/过滤/清屏 |
+| ① 独立日志服务（推荐） | `python log_viewer.py` → `http://127.0.0.1:8099`，单独端口 + `.env` 里的固定口令；支持多文件切换/过滤/暂停 |
 | ② 终端 | `Get-Content logs\backend.log -Wait -Tail 50` |
 | ③ 直接看文件 | `logs/backend.log` |
 
 | 想改什么 | 改哪里 |
 |---------|--------|
 | 日志文件路径 | 环境变量 `BACKEND_LOG_FILE`（默认 `<项目根>/logs/backend.log`） |
-| 轮询间隔 / 关闭日志接口 | `DEV_LOG_POLL`（默认 1s）、`BACKEND_LOG_ENDPOINT=false` |
-| 日志实时流实现 | `controller/dev_routes.py`（鉴权复用 `auth.get_current_user`）、`vue/src/views/LogsView.vue` |
+| 日志服务端口与口令 | `.env` 的 `LOG_VIEWER_HOST/PORT/USER/PASSWORD`（`log_viewer.py` 启动时会加载 `.env`） |
+| 主应用是否暴露日志接口 | `BACKEND_LOG_ENDPOINT`（默认 false；关闭时统一返回 404） |
+| 日志实时流实现 | `log_viewer.py`（独立服务，HTTP Basic 鉴权 + SSE）；主应用侧为 `controller/dev_routes.py` |
 | 日志 tee 逻辑 | `run_backend.py :: _Tee`（Windows GBK 控制台下自动降级为 `replace`，不会因 ✅ 崩） |
+
+---
+
+## 十一、意图识别的日期处理（`services/intent_dates.py`）
+
+```
+POST /api/intent/recognize  { query }
+  └─ functions/get_intent.py :: get_user_intent()
+        ├─ skill_vars(today)                       ← 注入 {{CURRENT_DATE}} / {{WEEKDAY}} / {{TOMORROW}} …
+        │   └─ GeneralAgent(..., skill_vars=...) → load_skill("Intent", variables=...)
+        ├─ 用户消息里再带一份 current_date（双重保险，模型不必猜"今天几号"）
+        ├─ LLM 返回 JSON → to_json → clean_intent
+        └─ normalize_intent_dates(intent, 用户原文)   ★ 确定性兜底，不依赖模型算术
+              ├─ parse_relative_start()  明天/后天/这周末/下周末/下周三/下个月/8月3日/国庆/2026-10-01
+              ├─ parse_relative_end()    "10月5日回家"/"8月6号返程"/"明天回来" → 那是**结束日**
+              └─ 一致性：end = start + days − 1；给了起止日期则反推 days；非法值一律置 null
+```
+
+| 想改什么 | 改哪里 |
+|---------|--------|
+| 相对日期说法（如新增"小长假"） | `services/intent_dates.py :: parse_relative_start()` / `parse_relative_end()` |
+| 业务时区 | `services/intent_dates.py :: TZ`（默认 Asia/Shanghai） |
+| 意图提示词里的日期规则 | `skills/Intent.md`（**只用 `{{CURRENT_DATE}}` 占位符，不要写具体日期**） |
+| 注入哪些模板变量 | `services/intent_dates.py :: skill_vars()` + `functions/get_intent.py` |
+| 日期归一化规则 | `services/intent_dates.py :: normalize_intent_dates()` |
+| 回归测试 | `test/test_intent_dates.py`（含"skill 里不许再出现写死的当前日期"断言） |
