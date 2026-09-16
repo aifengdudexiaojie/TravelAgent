@@ -331,9 +331,10 @@ export const xhsApi = {
   status(): Promise<AxiosResponse> {
     return http.get('/xhs/status')
   },
-  /** 取登录二维码（Base64 PNG）：前端直接展示，用户手机扫码即可 */
+  /** 取登录二维码（Base64 PNG）：前端直接展示，用户手机扫码即可。
+   *  实例启动中会返回 {pending:true}（前端继续轮询），所以这里给足超时。 */
   qrcode(): Promise<AxiosResponse> {
-    return http.get('/xhs/qrcode')
+    return http.get('/xhs/qrcode', { timeout: 180000 })
   },
   /** 退出登录（换号前调用）：删掉该用户的 cookies 并停实例 */
   clear(): Promise<AxiosResponse> {

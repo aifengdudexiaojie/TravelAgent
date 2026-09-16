@@ -172,7 +172,7 @@ MULTI_USER = _env_flag("XHS_MULTI_USER", True)
 DEFAULT_URL = os.getenv("XHS_MCP_URL", "http://localhost:18060/mcp").strip()
 PORT_BASE = int(os.getenv("XHS_PORT_BASE", "18100"))
 MAX_INSTANCES = int(os.getenv("XHS_MAX_INSTANCES", "3"))
-START_TIMEOUT = float(os.getenv("XHS_START_TIMEOUT", "45"))
+START_TIMEOUT = float(os.getenv("XHS_START_TIMEOUT", "180"))   # 首次运行要下载无头浏览器（~150MB）
 IDLE_TIMEOUT = float(os.getenv("XHS_IDLE_TIMEOUT", "1800"))
 HEADLESS = _env_flag("XHS_HEADLESS", True)
 
@@ -303,8 +303,13 @@ def _http_reachable(url: str, timeout: float = 2.0) -> bool:
         return False
 
 
-def start_mcp(user_id: str) -> Dict[str, Any]:
-    """启动（或复用）用户自己的 MCP 实例。幂等。"""
+def start_mcp(user_id: str, wait: bool = True) -> Dict[str, Any]:
+    """启动（或复用）用户自己的 MCP 实例。幂等。
+
+    wait=False：只把进程拉起来就返回（{"pending": True}），不在这里等它就绪 ——
+    首次运行 MCP 会下载约 150MB 的无头浏览器，阻塞式等待很容易把 HTTP 请求拖超时
+    （前端表现为"一直在获取二维码，最后显示不可用"）。调用方改为轮询即可。
+    """
     mcp_exe, err = resolve_exe("mcp")
     if mcp_exe is None:
         logger.error("小红书 MCP 不可用：%s", err)
@@ -354,21 +359,51 @@ def start_mcp(user_id: str) -> Dict[str, Any]:
             json.dumps({"port": port, "pid": proc.pid, "started_at": inst.started_at},
                        ensure_ascii=False, indent=2), encoding="utf-8")
 
+    if not wait:
+        return {"ok": False, "pending": True, "url": inst.url, "port": inst.port, "pid": proc.pid,
+                "message": "小红书实例正在启动…（首次运行需下载无头浏览器，约 150MB，请稍候）"}
+
     deadline = time.time() + START_TIMEOUT
     while time.time() < deadline:
         if not inst.alive():
             _release_port(inst.port)
             with _lock:
                 _instances.pop(inst.user_id, None)
-            return {"ok": False, "url": DEFAULT_URL,
-                    "message": f"MCP 进程启动后立即退出，详见日志 {log_path}"}
+            return {"ok": False, "url": DEFAULT_URL, "log_tail": instance_log_tail(user_id),
+                    "message": f"MCP 进程启动后立即退出，日志尾部：\n{instance_log_tail(user_id)}"}
         if _http_reachable(inst.url):
             return {"ok": True, "url": inst.url, "port": inst.port, "pid": proc.pid,
                     "message": "MCP 实例已启动"}
         time.sleep(0.6)
 
-    return {"ok": False, "url": inst.url, "port": inst.port,
-            "message": f"MCP 启动超时（{START_TIMEOUT:.0f}s），详见日志 {log_path}"}
+    return {"ok": False, "url": inst.url, "port": inst.port, "log_tail": instance_log_tail(user_id),
+            "message": (f"MCP 启动超时（{START_TIMEOUT:.0f}s）。日志尾部：\n{instance_log_tail(user_id)}\n"
+                        f"提示：首次运行需下载无头浏览器（约 150MB），网络受限时会较慢；"
+                        f"可用 XHS_START_TIMEOUT 调大等待时间")}
+
+
+def instance_ready(user_id: str) -> bool:
+    """实例进程活着且 HTTP 已经能连通（可以取二维码/检索了）。"""
+    inst = instance_for(user_id, touch=False)
+    if inst is None or not inst.alive():
+        return False
+    return _http_reachable(inst.url)
+
+
+def instance_log_tail(user_id: str, lines: int = 8) -> str:
+    """取该用户 MCP 实例日志的尾部（排查启动失败用）。"""
+    path = LOG_DIR / f"xhs-mcp-{_safe_name(user_id)}.log"
+    try:
+        if not path.exists():
+            return ""
+        with path.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 4096))
+            data = fh.read().decode("utf-8", errors="replace")
+        return "\n".join(data.splitlines()[-lines:])
+    except OSError:
+        return ""
 
 
 def stop_mcp(user_id: str) -> bool:
@@ -452,16 +487,34 @@ def login_qrcode(user_id: str) -> Dict[str, Any]:
     """
     from xiaohongshu_mcp_client import get_login_qrcode as _qr
 
-    started = start_mcp(user_id)          # 显式登录动作，允许按需拉起实例
-    url = started.get("url") or DEFAULT_URL
-    if not started.get("ok") and MULTI_USER:
-        return {"ok": False, "mcp_url": url, "message": started.get("message") or "实例不可用"}
+    inst = instance_for(user_id, touch=True)
+    url = inst.url if inst is not None else DEFAULT_URL          # ⚠️ 必须在分支外先赋值
+    reachable = inst is not None and inst.alive() and _http_reachable(url)
+
+    if not reachable:
+        # 实例没起 / 还没就绪 → 后台拉起，接口**立刻**返回 pending，由前端轮询。
+        # （不能在这里阻塞等待：首次运行要下载 ~150MB 浏览器，会把 HTTP 请求拖超时）
+        started = start_mcp(user_id, wait=not MULTI_USER)
+        url = started.get("url") or url
+        if not _http_reachable(url):
+            waited = int(time.time() - inst.started_at) if inst is not None else 0
+            if started.get("pending") or started.get("ok") or started.get("reused"):
+                return {
+                    "ok": False, "pending": True, "mcp_url": url, "waited": waited,
+                    "message": (started.get("message") or "小红书实例正在启动…")
+                               + (f"（已等待 {waited}s）" if waited > 5 else ""),
+                }
+            return {"ok": False, "mcp_url": url,
+                    "message": started.get("message") or "小红书实例不可用",
+                    "log_tail": started.get("log_tail", "")}
 
     try:
         qr = _qr(url)
     except Exception as exc:
         logger.warning("获取登录二维码失败 user=%s: %s", user_id, exc)
-        return {"ok": False, "mcp_url": url, "message": f"获取二维码失败：{exc}"}
+        tail = instance_log_tail(user_id)
+        return {"ok": False, "mcp_url": url, "log_tail": tail,
+                "message": f"获取二维码失败：{exc}" + (f"\n实例日志尾部：\n{tail}" if tail else "")}
 
     if not qr.get("image_base64"):
         return {
@@ -640,6 +693,7 @@ def status_for(user_id: str) -> Dict[str, Any]:
         "multi_user": MULTI_USER,
         "max_instances": MAX_INSTANCES,
         "running_instances": len([i for i in _instances.values() if i.alive()]),
+        "starting": bool(inst is not None and inst.alive() and not data.get("mcp_running")),
         "platform": PLATFORM,
         "exe_available": _mcp_exe_path() is not None,
         "login_exe_available": resolve_exe("login")[0] is not None,

@@ -282,5 +282,108 @@ class ImportCookiesTest(unittest.TestCase):
         start.assert_called_once()
 
 
+class QrcodeLoginTest(_UsersDirCleanup, unittest.TestCase):
+    """扫码登录：二维码解析、就绪/启动中/失败三条分支、退出登录。"""
+
+    def setUp(self):
+        super().setUp()
+        self._multi = xm.MULTI_USER
+        xm.MULTI_USER = True
+        xm._instances.clear()
+        self.user = "test-qr-user"
+
+    def tearDown(self):
+        xm.MULTI_USER = self._multi
+        xm._instances.clear()
+        super().tearDown()
+
+    # ---------- MCP 客户端：解析二维码（text + image） ----------
+    def test_get_login_qrcode_parses_text_image_and_expiry(self):
+        from xiaohongshu_mcp_client import get_login_qrcode
+
+        fake = [
+            {"type": "text", "text": "请用小红书 App 在 2026-09-16 15:24:04 前扫码登录 👇"},
+            {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgoAAA"},
+        ]
+        with patch("xiaohongshu_mcp_client._batch_call_content", return_value=fake):
+            qr = get_login_qrcode("http://x/mcp")
+
+        self.assertEqual(qr["image_base64"], "iVBORw0KGgoAAA")
+        self.assertEqual(qr["mime"], "image/png")
+        self.assertIn("扫码登录", qr["text"])
+        self.assertTrue(qr["expires_at"].startswith("2026-09-16T15:24:04"))
+
+    def test_get_login_qrcode_without_image_reports_message(self):
+        from xiaohongshu_mcp_client import get_login_qrcode
+
+        with patch("xiaohongshu_mcp_client._batch_call_content",
+                   return_value=[{"type": "text", "text": "✅ 已登录"}]):
+            qr = get_login_qrcode("http://x/mcp")
+        self.assertEqual(qr["image_base64"], "")
+        self.assertIn("已登录", qr["message"])
+
+    # ---------- 就绪：直接取码（也覆盖 UnboundLocalError 回归） ----------
+    def test_ready_instance_returns_qrcode(self):
+        class _FakeProc:
+            def poll(self):
+                return None
+
+        xm._instances[self.user] = xm.Instance(
+            user_id=self.user, port=18100, workdir=xm.workdir_for(self.user), proc=_FakeProc())
+
+        with patch.object(xm, "_http_reachable", return_value=True), \
+             patch("xiaohongshu_mcp_client.get_login_qrcode",
+                   return_value={"text": "扫码", "image_base64": "AAAA", "mime": "image/png",
+                                 "expires_at": "2026-09-16T15:24:04+08:00"}) as qr:
+            result = xm.login_qrcode(self.user)
+
+        qr.assert_called_once_with("http://localhost:18100/mcp")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["image_base64"], "AAAA")
+
+    # ---------- 启动中：必须返回 pending（用户遇到的"一直获取中"就是这个分支） ----------
+    def test_starting_instance_returns_pending_not_error(self):
+        with patch.object(xm, "_http_reachable", return_value=False), \
+             patch.object(xm, "start_mcp",
+                          return_value={"ok": False, "pending": True, "url": "http://localhost:18101/mcp",
+                                        "message": "小红书实例正在启动…"}) as start, \
+             patch("xiaohongshu_mcp_client.get_login_qrcode") as qr:
+            result = xm.login_qrcode(self.user)
+
+        start.assert_called_once()
+        qr.assert_not_called()                    # 还没就绪就不该去取码
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["pending"])
+        self.assertIn("启动", result["message"])
+
+    # ---------- 真失败：带原因 + 日志尾部 ----------
+    def test_hard_failure_reports_message_and_log_tail(self):
+        with patch.object(xm, "_http_reachable", return_value=False), \
+             patch.object(xm, "start_mcp",
+                          return_value={"ok": False, "url": xm.DEFAULT_URL,
+                                        "message": "未找到 mcp 可执行文件（当前平台：linux）",
+                                        "log_tail": "line1\nline2"}):
+            result = xm.login_qrcode(self.user)
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result.get("pending"))
+        self.assertIn("linux", result["message"])
+        self.assertEqual(result["log_tail"], "line1\nline2")
+
+    # ---------- 退出登录（换号） ----------
+    def test_clear_login_stops_instance_and_deletes_cookie(self):
+        path = xm.workdir_for(self.user) / "cookies.json"
+        path.write_text('{"cookies":[' + "x" * 600 + "]}", encoding="utf-8")
+        self.assertTrue(xm.cookie_present(self.user))
+
+        with patch.object(xm, "stop_mcp", return_value=True) as stop:
+            result = xm.clear_login(self.user)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["removed"])
+        self.assertFalse(path.exists())
+        stop.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

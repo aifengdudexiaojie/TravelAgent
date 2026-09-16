@@ -211,11 +211,15 @@ curl -s -X POST http://127.0.0.1:8088/api/xhs/cookies \
 | 日志 `Permission denied: '.../xiaohongshu-mcp-windows-amd64.exe'` | 把 **Windows 版**文件放到 Linux 服务器上了（PE 文件在 Linux 上无法执行） | 按第五节换 Linux 构建 |
 | `Exec format error` | 同上（有的内核先报权限再报格式） | 同上 |
 | 状态里 `exe_error` 提示"未找到 linux 可执行文件" | 只放了 Windows 版 / 文件名不对 | 确认文件名为 `xiaohongshu-mcp-linux-amd64` 且 `chmod +x` |
-| 点登录后二维码出不来 | 实例没启动或启动超时 | 看 `logs/xhs-mcp-<user_id>.log`；首次启动要下载浏览器（~150MB）会慢一些 |
+| **弹窗一直显示「实例启动中…」** | 首次运行 MCP 要下载无头浏览器（~150MB），启动较慢（正常 1–2 分钟） | 等它出图即可；超过 3 分钟就到 `logs/xhs-mcp-<user_id>.log` 看进度，或用 `XHS_START_TIMEOUT` 调大等待 |
+| 弹窗显示红色错误 + 「查看实例日志」 | 取码硬失败（缺可执行文件、平台不对、实例崩溃等） | 点开日志尾部按提示处理；常见的就是上面两条 |
 | 二维码扫了没反应 | 二维码已过期（默认 2 分钟左右） | 弹窗会自动刷新，也可点「🔄 刷新二维码」 |
 | 之前能搜、某天开始搜不到 | 小红书登录态过期 / 在别处登录把这里顶下线 | 点「🔄 换个账号」重新扫码 |
 | 实例起得来但搜索结果为空 | 正常，可能是关键词没结果；也可能是被风控 | 换个关键词试；查日志 |
 | 多人同时用超时 | 实例数达上限（`XHS_MAX_INSTANCES`，默认 3） | 调大上限（注意内存）或让用户错峰 |
+
+> 排查入口：`logs/xhs-mcp-<user_id>.log`（实例日志）、`logs/xhs-login-<user_id>.log`（桌面登录程序日志），
+> 都可在独立日志服务 `python log_viewer.py` 的页面里切换查看。
 
 ## 八、合规与风控提醒
 
