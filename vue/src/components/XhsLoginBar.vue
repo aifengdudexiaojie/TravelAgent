@@ -18,6 +18,7 @@ const emit = defineEmits<{
 
 const status = ref<any>(null)
 const fetchingQr = ref(false)
+const refreshing = ref(false)         // 状态请求防重入（后端可能耗时数秒）
 const importing = ref(false)
 const clearing = ref(false)
 /** 状态条级别的错误（取状态失败等） */
@@ -38,6 +39,11 @@ const showLogTail = ref(false)
 /** 缺系统运行库时的"服务器上一键修复"命令（后端装好依赖后为空） */
 const qrInstallHint = ref('')
 const copiedHint = ref('')
+/** 二维码首次展示的时间：用于判断"扫码后迟迟没反应"并给出排查提示 */
+const qrShownAt = ref(0)
+/** 诊断面板是否展开（默认收起；扫码后 60s 还没登录会自动展开） */
+const showDiag = ref(false)
+const diagAutoOpen = ref(false)
 const now = ref(Date.now())
 
 let timer: number | null = null
@@ -56,6 +62,12 @@ const qrRemain = computed(() => {
   return Math.max(0, Math.round((new Date(qrExpiresAt.value).getTime() - now.value) / 1000))
 })
 const qrExpired = computed(() => qrRemain.value !== null && qrRemain.value <= 0)
+
+/** 二维码展示后已经等了多久（秒）：超过 60s 还没变绿就主动引导排查 */
+const qrWaitSeconds = computed(() =>
+  qrShownAt.value ? Math.round((now.value - qrShownAt.value) / 1000) : 0)
+const scanStuck = computed(() =>
+  !!qrImage.value && !loggedIn.value && !qrExpired.value && qrWaitSeconds.value >= 60)
 
 const dotClass = computed(() => {
   if (error.value || !exeOk.value) return 'bg-red-500'
@@ -77,6 +89,10 @@ const hint = computed(() => {
 })
 
 async function refresh() {
+  // 后端查状态最多 8 秒（MCP 忙时），而这里每 2.5 秒轮询一次 → 必须防重入，
+  // 否则慢的时候请求会不断堆叠，页面反而更"没反应"。
+  if (refreshing.value) return
+  refreshing.value = true
   try {
     const resp = await xhsApi.status()
     status.value = resp.data
@@ -85,6 +101,8 @@ async function refresh() {
   } catch (err: any) {
     error.value = apiErrorMessage(err, '无法获取小红书状态')
     emit('update:loggedIn', false)
+  } finally {
+    refreshing.value = false
   }
 }
 
@@ -123,6 +141,9 @@ function resetQrState() {
   qrError.value = ''
   qrLogTail.value = ''
   qrInstallHint.value = ''
+  qrShownAt.value = 0
+  showDiag.value = false
+  diagAutoOpen.value = false
   showLogTail.value = false
   slowRetry = 0
 }
@@ -141,12 +162,17 @@ async function openQr() {
   await fetchQr()
 }
 
-/** 取二维码：ok=出图；pending=实例启动中（继续轮询）；否则是硬失败 */
-async function fetchQr() {
+/** 取二维码：ok=出图；pending=实例启动中（继续轮询）；否则是硬失败
+ *
+ *  ⚠️ force=true 才向 MCP 重新取码（用户点「重新获取二维码」时）。
+ *  绝不能自动重复取码：上游 issue #799 —— 重复调用会新建浏览器、取消旧会话，
+ *  用户刚在手机上确认的登录（或设备验证弹窗）会被顶掉，表现为"扫码后毫无反应"。
+ */
+async function fetchQr(force = false) {
   if (fetchingQr.value) return
   fetchingQr.value = true
   try {
-    const resp = await xhsApi.qrcode()
+    const resp = await xhsApi.qrcode(force)
     const data = resp.data || {}
     if (data.ok) {
       qrImage.value = `data:${data.mime || 'image/png'};base64,${data.image_base64}`
@@ -155,6 +181,7 @@ async function fetchQr() {
       qrError.value = ''
       qrLogTail.value = ''
       qrInstallHint.value = ''
+      if (!data.cached || !qrShownAt.value) qrShownAt.value = Date.now()
       pollFast = 120                       // 接下来 ~5 分钟每 2.5s 查一次登录状态
     } else if (data.pending) {
       qrPending.value = true
@@ -249,11 +276,17 @@ onMounted(() => {
     if (!loggedIn.value) await refresh()
 
     if (!showQr.value) return
-    // 启动中 → 每次轮询都重试取码；硬失败 → 放慢到每 ~7.5 秒重试一次（避免刷屏）
+    // 启动中/还没出图 → 每次轮询都重试取码（此时还没有登录会话，重复取码无副作用）；
+    // 硬失败 → 放慢到每 ~7.5 秒重试一次（避免刷屏）。
+    // ⚠️ 一旦出图就**绝不自动重新取码**：重复向 MCP 取码会新建浏览器、取消旧会话
+    //    （上游 issue #799），用户刚在手机上确认的登录会被顶掉 —— 过去那个
+    //    "过期自动换新"正是"扫码后毫无反应"的元凶之一。过期只提示，由用户点按钮。
     if (qrPending.value || !qrImage.value) {
       if (!qrError.value || slowRetry++ % 3 === 0) await fetchQr()
-    } else if (qrExpired.value) {
-      await fetchQr()                     // 二维码过期自动换新
+    }
+    if (scanStuck.value && !diagAutoOpen.value) {
+      diagAutoOpen.value = true           // 扫码后 60s 没动静 → 自动展开诊断，别让用户干等
+      showDiag.value = true
     }
   }, 2500)
 })
@@ -354,10 +387,48 @@ onBeforeUnmount(() => {
           <p v-if="qrImage" class="mt-3 text-xs text-gray-500 text-center">
             打开小红书 App →「我」→ 右上角扫一扫
           </p>
-          <p v-if="qrRemain !== null && qrImage" class="mt-1 text-xs" :class="qrExpired ? 'text-amber-600' : 'text-gray-400'">
-            {{ qrExpired ? '二维码已过期，正在自动刷新…' : `二维码有效期剩余 ${qrRemain} 秒` }}
+          <p v-if="qrRemain !== null && qrImage" class="mt-1 text-xs text-center"
+             :class="qrExpired ? 'text-amber-600' : 'text-gray-400'">
+            {{ qrExpired
+              ? '二维码已过期：请点下方「🔄 重新获取二维码」'
+              : `二维码有效期剩余 ${qrRemain} 秒` }}
+          </p>
+          <p v-if="qrExpired && qrImage" class="mt-1 text-[11px] text-amber-600 text-center">
+            重新获取会让刚才的扫码失效，请用新二维码再扫一次
+          </p>
+          <!-- 扫码后没动静：主动引导排查（而不是让用户干等） -->
+          <p v-if="scanStuck && !qrError" class="mt-2 text-[11px] text-amber-700 text-center">
+            已经等了 {{ qrWaitSeconds }} 秒还没登录成功 —— 请看下面的排查提示
           </p>
           <p v-if="loggedIn" class="mt-2 text-xs text-green-600 font-medium">✅ 已登录，正在关闭…</p>
+        </div>
+
+        <!-- 扫码后无反应：把最常见的原因和两条出路直接写清楚 -->
+        <div v-if="scanStuck && !qrError" class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 leading-relaxed">
+          <p class="font-medium">手机上确认登录了吗？</p>
+          <p>① 微信/小红书扫码后，需要在手机上点<b>「确认登录」</b>才算完成。</p>
+          <p>② 如果手机提示<b>「安全验证 / 请再次扫码」</b>：这是小红书的风控二次验证，
+             上游 MCP 目前不处理这种弹窗（已知问题），扫码方式会卡住 —— 请改用下面的
+             <b>「📄 导入 cookies.json」</b>：在你自己电脑上登录一次，把这个文件导进来即可。</p>
+          <p>③ 不要反复点刷新：重新取码会让刚才的登录失效，请耐心等到 60~90 秒。</p>
+        </div>
+
+        <!-- 登录诊断（MCP 原话 + 实例日志尾部）：排查"扫码后没反应"用 -->
+        <div v-if="qrImage && !loggedIn" class="mt-3">
+          <button @click="showDiag = !showDiag" class="text-[11px] text-blue-600 hover:underline">
+            {{ showDiag ? '收起登录诊断' : '登录诊断（MCP 状态 / 实例日志）' }}
+          </button>
+          <div v-if="showDiag" class="mt-1 rounded-lg bg-gray-50 border border-gray-100 p-2">
+            <p class="text-[10px] text-gray-500">MCP 返回：</p>
+            <pre class="text-[10px] text-gray-700 whitespace-pre-wrap break-all">{{ status?.raw || status?.message || '（暂无）' }}</pre>
+            <template v-if="status?.log_tail">
+              <p class="mt-2 text-[10px] text-gray-500">实例日志尾部（logs/xhs-mcp-*.log）：</p>
+              <pre class="max-h-40 overflow-auto bg-gray-900 text-gray-200 text-[10px] p-2 rounded whitespace-pre-wrap">{{ status.log_tail }}</pre>
+            </template>
+            <p v-if="status?.busy" class="mt-2 text-[10px] text-amber-700">
+              MCP 正忙（状态查询超时），稍后会自动重试。
+            </p>
+          </div>
         </div>
 
         <!-- 缺浏览器运行库：把服务器上要执行的命令直接给出来（可复制） -->
@@ -381,10 +452,11 @@ onBeforeUnmount(() => {
 
         <div class="mt-4 flex flex-wrap items-center gap-2 justify-center">
           <button
-            @click="fetchQr"
+            @click="fetchQr(true)"
             :disabled="fetchingQr"
+            title="重新向小红书要一张新二维码（会让上一次的扫码失效，只在二维码过期或确定没扫过时点）"
             class="px-3 py-1.5 text-xs rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition disabled:opacity-50"
-          >{{ fetchingQr ? '获取中…' : '🔄 刷新二维码' }}</button>
+          >{{ fetchingQr ? '获取中…' : '🔄 重新获取二维码' }}</button>
           <button
             @click="fileInput?.click()"
             :disabled="importing"
@@ -403,6 +475,7 @@ onBeforeUnmount(() => {
         <p v-if="notice" class="mt-3 text-xs text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2">{{ notice }}</p>
         <p class="mt-3 text-[11px] text-gray-400 leading-relaxed">
           首次登录时服务器要下载无头浏览器（约 150MB），可能等 1~2 分钟，属正常现象。<br />
+          扫码后请在手机上点「确认登录」，并<b>不要</b>刷新二维码（刷新会让这次扫码失效）。<br />
           登录状态只保存在你自己的账号目录里，与其他用户互不影响；同一个账号不要同时在别处登录网页版。
         </p>
       </div>

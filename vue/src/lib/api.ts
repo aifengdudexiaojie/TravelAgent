@@ -332,9 +332,11 @@ export const xhsApi = {
     return http.get('/xhs/status')
   },
   /** 取登录二维码（Base64 PNG）：前端直接展示，用户手机扫码即可。
-   *  实例启动中会返回 {pending:true}（前端继续轮询），所以这里给足超时。 */
-  qrcode(): Promise<AxiosResponse> {
-    return http.get('/xhs/qrcode', { timeout: 180000 })
+   *  实例启动中会返回 {pending:true}（前端继续轮询），所以这里给足超时。
+   *  ⚠️ 默认返回**缓存**的码，不要自动重复调用：重复向 MCP 取码会取消当前登录会话
+   *  （上游 issue #799），用户刚扫完就被顶掉。只有用户点「重新获取二维码」时才传 refresh=true。 */
+  qrcode(refresh = false): Promise<AxiosResponse> {
+    return http.get('/xhs/qrcode', { params: refresh ? { refresh: 1 } : {}, timeout: 180000 })
   },
   /** 退出登录（换号前调用）：删掉该用户的 cookies 并停实例 */
   clear(): Promise<AxiosResponse> {

@@ -25,7 +25,8 @@ MCP_URL = "http://localhost:18060/mcp"
 
 def _batch_call(method: str, params: dict | None = None,
                 base_url: str = MCP_URL,
-                max_retries: int = 2) -> Any:
+                max_retries: int = 2,
+                timeout: float = 120) -> Any:
     """
     发送 MCP batch 请求（initialize + initialized + target_method）
 
@@ -39,6 +40,10 @@ def _batch_call(method: str, params: dict | None = None,
         params: 方法参数
         base_url: MCP 服务地址
         max_retries: 失败重试次数（MCP 是浏览器操作，偶发超时正常）
+        timeout: 单次 HTTP 超时秒数。⚠️ 查登录状态这类"每几秒轮询一次"的调用
+                 必须传小值（见 services/xhs_manager.STATUS_TIMEOUT）：MCP 在忙
+                 浏览器操作时可能长时间不返回，默认 120s 会把状态接口一起拖死，
+                 前端表现就是"页面一直没反应"。
     """
     payload = [
         {"jsonrpc": "2.0", "id": "1", "method": "initialize",
@@ -55,7 +60,7 @@ def _batch_call(method: str, params: dict | None = None,
             resp = httpx.post(
                 base_url, json=payload,
                 headers={"Accept": "application/json, text/event-stream"},
-                timeout=120,
+                timeout=timeout,
             )
             resp.raise_for_status()
             responses = resp.json()
@@ -108,7 +113,8 @@ def _batch_call(method: str, params: dict | None = None,
 
 def _batch_call_content(method: str, params: dict | None = None,
                         base_url: str = MCP_URL,
-                        max_retries: int = 2) -> list[dict]:
+                        max_retries: int = 2,
+                        timeout: float = 120) -> list[dict]:
     """同 `_batch_call`，但返回 MCP 的 **原始 content 列表**（text / image 都在里面）。
 
     为什么需要它：登录二维码不是文本，而是 MCP 返回的
@@ -129,7 +135,7 @@ def _batch_call_content(method: str, params: dict | None = None,
             resp = httpx.post(
                 base_url, json=payload,
                 headers={"Accept": "application/json, text/event-stream"},
-                timeout=120,
+                timeout=timeout,
             )
             resp.raise_for_status()
             responses = resp.json()

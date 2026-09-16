@@ -175,6 +175,13 @@ MAX_INSTANCES = int(os.getenv("XHS_MAX_INSTANCES", "3"))
 START_TIMEOUT = float(os.getenv("XHS_START_TIMEOUT", "180"))   # 首次运行要下载无头浏览器（~150MB）
 IDLE_TIMEOUT = float(os.getenv("XHS_IDLE_TIMEOUT", "1800"))
 HEADLESS = _env_flag("XHS_HEADLESS", True)
+# 查登录状态是"每 2.5 秒轮询一次"的调用：MCP 忙起来可能长时间不返回，
+# 用默认 120s 超时会把 /api/xhs/status 一起拖死（前端表现：扫码后页面毫无反应）。
+STATUS_TIMEOUT = float(os.getenv("XHS_STATUS_TIMEOUT", "8"))
+# 二维码缓存时长：**绝不能**每次请求都去调 MCP 的 get_login_qrcode ——
+# 上游 issue #799 明确：重复调用会新建浏览器并取消旧会话，
+# 于是"用户刚在手机上确认的登录/设备验证上下文"会被顶掉，表现为扫码后永远没反应。
+QR_CACHE_SECONDS = float(os.getenv("XHS_QR_CACHE", "120"))
 
 
 # ================================================================
@@ -207,6 +214,8 @@ class Instance:
 _instances: Dict[str, Instance] = {}
 _ports_in_use: set[int] = set()
 _lock = threading.RLock()
+# 二维码缓存：{user_key: {"at": ts, "payload": {...}}}（进程内，单副本部署假设不变）
+_qr_cache: Dict[str, Dict[str, Any]] = {}
 
 
 def multi_user_enabled() -> bool:
@@ -512,6 +521,7 @@ def start_mcp(user_id: str, wait: bool = True) -> Dict[str, Any]:
         workdir = workdir_for(user_id)
         log_path = LOG_DIR / f"xhs-mcp-{_safe_name(user_id)}.log"
         LOG_DIR.mkdir(exist_ok=True)
+        _qr_cache.pop(_qr_cache_key(user_id), None)   # 新实例=新会话，旧二维码作废
 
         cmd = [str(mcp_exe), f"-port=:{port}", f"-headless={'true' if HEADLESS else 'false'}"]
         logger.info("启动小红书 MCP：user=%s port=%d cwd=%s", user_id, port, workdir)
@@ -583,6 +593,7 @@ def instance_log_tail(user_id: str, lines: int = 8) -> str:
 def stop_mcp(user_id: str) -> bool:
     with _lock:
         inst = _instances.pop(_safe_name(user_id), None)
+    _qr_cache.pop(_qr_cache_key(user_id), None)      # 实例没了，缓存里的码也失效
     if inst is None:
         return False
     if inst.proc is not None and inst.proc.poll() is None:
@@ -651,15 +662,55 @@ def start_login(user_id: str) -> Dict[str, Any]:
     }
 
 
-def login_qrcode(user_id: str) -> Dict[str, Any]:
+def _qr_cache_key(user_id: str) -> str:
+    return _safe_name(user_id)
+
+
+def cached_qrcode(user_id: str, max_age: float = QR_CACHE_SECONDS) -> Optional[Dict[str, Any]]:
+    """取缓存的二维码（没过期就返回，否则 None）。
+
+    为什么要缓存：上游 issue #799 指出，重复调用 MCP 的 `get_login_qrcode`
+    会**新建浏览器并取消旧会话** —— 用户在手机上刚点完"确认登录"、
+    或者正卡在二次设备验证页时，再取一次码就把那个会话关掉了，
+    结果就是"扫码后毫无反应、永远不变绿"。
+    """
+    entry = _qr_cache.get(_qr_cache_key(user_id))
+    if not entry:
+        return None
+    if time.time() - entry["at"] > max_age:
+        _qr_cache.pop(_qr_cache_key(user_id), None)
+        return None
+    payload = dict(entry["payload"])
+    expires_at = payload.get("expires_at")
+    if expires_at:
+        try:
+            from datetime import datetime
+            if datetime.fromisoformat(expires_at).timestamp() - time.time() < 5:
+                return None                      # 马上就要过期了，别给用户一张废码
+        except Exception:
+            pass
+    payload["cached"] = True
+    payload["cache_age"] = round(time.time() - entry["at"], 1)
+    return payload
+
+
+def login_qrcode(user_id: str, force: bool = False) -> Dict[str, Any]:
     """取登录二维码（**云上用户登录的正解**，无需桌面/弹窗，也不用碰 cookies 文件）。
 
     流程：确保该用户实例在跑 → 调 MCP 的 `get_login_qrcode` 工具 → 返回 Base64 图片，
     前端直接 <img src="data:image/png;base64,..."> 展示，用户用小红书 App 扫码即可。
 
+    ⚠️ `force=False`（默认）时优先返回**缓存**的二维码：重复向 MCP 取码会取消
+    当前登录会话（issue #799）。只有用户显式点「重新获取二维码」时前端才传 force=True。
+
     返回 {"ok", "image_base64", "mime", "text", "expires_at", "mcp_url", "message"}
     """
     from xiaohongshu_mcp_client import get_login_qrcode as _qr
+
+    if not force:
+        cached = cached_qrcode(user_id)
+        if cached is not None:
+            return cached
 
     inst = instance_for(user_id, touch=True)
     url = inst.url if inst is not None else DEFAULT_URL          # ⚠️ 必须在分支外先赋值
@@ -697,7 +748,7 @@ def login_qrcode(user_id: str) -> Dict[str, Any]:
             "ok": False, "mcp_url": url, "text": qr.get("text", ""),
             "message": qr.get("text") or "未取到二维码（可能已登录；如需换号请先退出登录）",
         })
-    return {
+    payload = {
         "ok": True,
         "mcp_url": url,
         "mime": qr.get("mime", "image/png"),
@@ -705,7 +756,12 @@ def login_qrcode(user_id: str) -> Dict[str, Any]:
         "text": qr.get("text", ""),
         "expires_at": qr.get("expires_at"),
         "message": qr.get("text") or "请用小红书 App 扫码登录",
+        "cached": False,
+        "cache_age": 0,
     }
+    # 只缓存成功结果；失败/pending 不缓存，避免把故障状态粘住
+    _qr_cache[_qr_cache_key(user_id)] = {"at": time.time(), "payload": dict(payload)}
+    return payload
 
 
 def clear_login(user_id: str) -> Dict[str, Any]:
@@ -838,12 +894,26 @@ def login_status(user_id: str) -> Dict[str, Any]:
         return info
 
     try:
+        # ⚠️ 超时必须短：前端每 2.5 秒问一次，MCP 忙浏览器操作时可能长时间不返回，
+        #    用默认 120s 会把状态接口一起挂住 —— 表现就是"扫码后页面毫无反应"。
         result = _batch_call("tools/call", {"name": "check_login_status"}, base_url=url,
-                             max_retries=0)
+                             max_retries=0, timeout=STATUS_TIMEOUT)
+    except TimeoutError:
+        info["message"] = "登录状态查询超时（MCP 正忙），稍后自动重试…"
+        info["busy"] = True
+        return info
     except ConnectionError:
         info["message"] = ("MCP 实例未启动" if MULTI_USER else "共享 MCP 服务未启动，请先运行 python start_mcp.py")
         return info
     except Exception as exc:
+        # 查询本身失败时，用 cookies.json 兜底判断（MCP 只在登录成功后才写这个文件）
+        if info["has_cookie"]:
+            info.update({
+                "logged_in": True,
+                "login_state": "cookie_only",
+                "message": "已检测到登录态文件（cookies.json）；状态查询失败，按已登录处理",
+            })
+            return info
         info["message"] = f"状态检查失败：{exc}"
         return info
 
@@ -858,6 +928,10 @@ def login_status(user_id: str) -> Dict[str, Any]:
         info["message"] = f"已登录{('：' + info['username']) if info.get('username') else ''}"
     else:
         info["message"] = "未登录，请点击「登录小红书」扫码"
+        # 排查"扫码后没反应"用：把 MCP 的原话 + 实例日志尾部一起给前端看。
+        # 小红书有时会在手机确认后追加一次"设备安全验证"，需要再扫一张码；
+        # 上游 MCP 尚未处理（issue #799），日志里能看到线索。
+        info["log_tail"] = instance_log_tail(user_id, lines=25)
     return info
 
 

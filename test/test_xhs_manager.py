@@ -14,11 +14,19 @@ import os
 import pathlib
 import shutil
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from services import xhs_manager as xm
+
+
+class _FakeProc:
+    """假装活着的 MCP 进程：poll() 返回 None 表示"还在跑"。"""
+
+    def poll(self):
+        return None
 
 
 class _UsersDirCleanup:
@@ -292,11 +300,13 @@ class QrcodeLoginTest(_UsersDirCleanup, unittest.TestCase):
         self._multi = xm.MULTI_USER
         xm.MULTI_USER = True
         xm._instances.clear()
+        xm._qr_cache.clear()          # 二维码缓存是模块级状态，测试之间必须隔离
         self.user = "test-qr-user"
 
     def tearDown(self):
         xm.MULTI_USER = self._multi
         xm._instances.clear()
+        xm._qr_cache.clear()
         super().tearDown()
 
     # ---------- MCP 客户端：解析二维码（text + image） ----------
@@ -510,6 +520,132 @@ class BrowserDepsDiagnosticsTest(_UsersDirCleanup, unittest.TestCase):
         payload = {"ok": False, "message": "原始原因"}
         with patch.object(xm, "browser_env_issue", return_value={}):
             self.assertIs(xm._with_env_issue("u", payload), payload)
+
+
+class ScanStuckRegressionTest(_UsersDirCleanup, unittest.TestCase):
+    """排查"扫码后毫无反应"时发现的两个真 bug（上游 issue #799 相关）：
+
+    ① 重复向 MCP 取码会新建浏览器、取消旧会话 → 用户刚在手机上确认的登录被顶掉。
+       所以默认必须返回**缓存**的码，只有显式 refresh 才真去取。
+    ② 查登录状态的 MCP 调用默认 120s 超时，而前端每 2.5s 轮询一次 →
+       MCP 一忙，状态接口就被挂住，页面看起来完全没反应。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._multi = xm.MULTI_USER
+        xm.MULTI_USER = True
+        xm._instances.clear()
+        xm._qr_cache.clear()
+        self.user = "test-scan-user"
+        xm._instances[self.user] = xm.Instance(
+            user_id=self.user, port=18123, workdir=xm.workdir_for(self.user), proc=_FakeProc())
+
+    def tearDown(self):
+        xm.MULTI_USER = self._multi
+        xm._instances.clear()
+        xm._qr_cache.clear()
+        super().tearDown()
+
+    def _qr_payload(self, expires_at="2099-01-01T00:00:00+08:00"):
+        return {"text": "请用小红书 App 扫码登录", "image_base64": "AAAA",
+                "mime": "image/png", "expires_at": expires_at}
+
+    # ---------- ① 二维码缓存：不重复取码 ----------
+    def test_second_qrcode_request_returns_cache_without_calling_mcp(self):
+        with patch.object(xm, "_http_reachable", return_value=True), \
+             patch("xiaohongshu_mcp_client.get_login_qrcode",
+                   return_value=self._qr_payload()) as qr:
+            first = xm.login_qrcode(self.user)
+            second = xm.login_qrcode(self.user)          # 前端轮询/重开弹窗
+
+        qr.assert_called_once()                          # ⚠️ 只允许取一次
+        self.assertTrue(first["ok"])
+        self.assertFalse(first["cached"])
+        self.assertTrue(second["ok"])
+        self.assertTrue(second["cached"])
+        self.assertEqual(second["image_base64"], "AAAA")
+
+    def test_force_refresh_calls_mcp_again(self):
+        with patch.object(xm, "_http_reachable", return_value=True), \
+             patch("xiaohongshu_mcp_client.get_login_qrcode",
+                   return_value=self._qr_payload()) as qr:
+            xm.login_qrcode(self.user)
+            forced = xm.login_qrcode(self.user, force=True)
+
+        self.assertEqual(qr.call_count, 2)
+        self.assertFalse(forced["cached"])
+
+    def test_expired_cached_qrcode_is_not_returned(self):
+        xm._qr_cache[xm._qr_cache_key(self.user)] = {
+            "at": time.time(),
+            "payload": {"ok": True, "image_base64": "OLD", "expires_at": "2020-01-01T00:00:00+08:00"},
+        }
+        with patch.object(xm, "_http_reachable", return_value=True), \
+             patch("xiaohongshu_mcp_client.get_login_qrcode",
+                   return_value=self._qr_payload()) as qr:
+            result = xm.login_qrcode(self.user)
+
+        qr.assert_called_once()                          # 过期码不能给用户，重新取
+        self.assertEqual(result["image_base64"], "AAAA")
+
+    def test_cache_dropped_when_instance_stops(self):
+        xm._qr_cache[xm._qr_cache_key(self.user)] = {
+            "at": time.time(), "payload": {"ok": True, "image_base64": "AAAA", "expires_at": None}}
+        self.assertIsNotNone(xm.cached_qrcode(self.user))
+        xm.stop_mcp(self.user)                           # 实例没了 → 旧码失效
+        self.assertIsNone(xm.cached_qrcode(self.user))
+
+    # ---------- ② 状态查询不能挂死 ----------
+    def test_status_uses_short_timeout_and_reports_busy(self):
+        with patch("xiaohongshu_mcp_client._batch_call",
+                   side_effect=TimeoutError("slow")) as call:
+            info = xm.login_status(self.user)
+
+        self.assertFalse(info["logged_in"])
+        self.assertTrue(info["busy"])
+        self.assertIn("超时", info["message"])
+        self.assertEqual(call.call_args.kwargs.get("timeout"), xm.STATUS_TIMEOUT)
+        self.assertLessEqual(xm.STATUS_TIMEOUT, 15, "轮询接口的超时必须短")
+
+    def test_status_falls_back_to_cookie_when_probe_fails(self):
+        (xm.workdir_for(self.user) / "cookies.json").write_text(
+            '{"cookies":[' + "x" * 600 + "]}", encoding="utf-8")
+        with patch("xiaohongshu_mcp_client._batch_call", side_effect=RuntimeError("boom")):
+            info = xm.login_status(self.user)
+
+        self.assertTrue(info["logged_in"], "有登录态文件时不应把用户判成未登录")
+        self.assertEqual(info["login_state"], "cookie_only")
+
+    def test_status_failure_without_cookie_reports_reason(self):
+        with patch("xiaohongshu_mcp_client._batch_call", side_effect=RuntimeError("boom")):
+            info = xm.login_status(self.user)
+        self.assertFalse(info["logged_in"])
+        self.assertIn("boom", info["message"])
+
+    def test_not_logged_in_status_includes_mcp_raw_and_log_tail(self):
+        with patch("xiaohongshu_mcp_client._batch_call",
+                   return_value={"content": [{"type": "text", "text": "❌ 未登录"}]}), \
+             patch.object(xm, "instance_log_tail", return_value="[launcher] waiting for scan"):
+            info = xm.login_status(self.user)
+
+        self.assertFalse(info["logged_in"])
+        self.assertIn("未登录", info["raw"])
+        self.assertIn("waiting for scan", info["log_tail"])
+
+    # ---------- ③ 路由：只有显式 refresh 才传 force ----------
+    def test_qrcode_route_passes_refresh_flag(self):
+        import asyncio
+
+        from controller import xhs_routes
+
+        with patch.object(xhs_routes.xhs_manager, "login_qrcode",
+                          return_value={"ok": True}) as qr:
+            asyncio.run(xhs_routes.xhs_qrcode(refresh=1, current_user={"user_id": "u"}))
+            asyncio.run(xhs_routes.xhs_qrcode(current_user={"user_id": "u"}))
+
+        self.assertEqual(qr.call_args_list[0].args, ("u", True))
+        self.assertEqual(qr.call_args_list[1].args, ("u", False))
 
 
 if __name__ == "__main__":

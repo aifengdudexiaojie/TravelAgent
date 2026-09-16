@@ -5,6 +5,7 @@
 
     GET  /api/xhs/status          当前用户状态（已登录？实例在跑？平台？为什么起不来？）
     GET  /api/xhs/qrcode          **取登录二维码（推荐，云上也用这个）** → 前端弹窗展示，手机扫码
+                                  ?refresh=1 强制重新取码（默认返回缓存的码，见下方说明）
     POST /api/xhs/clear           退出登录（换号用；会删掉该用户的 cookies）
     POST /api/xhs/cookies         导入 cookies.json（迁移已有登录态的高级选项）
     POST /api/xhs/login           桌面环境备用：拉起登录程序弹浏览器扫码
@@ -40,15 +41,22 @@ async def xhs_status(current_user: dict = Depends(get_current_user)):
 
 
 @router.get("/qrcode")
-async def xhs_qrcode(current_user: dict = Depends(get_current_user)):
+async def xhs_qrcode(refresh: int = 0,
+                     current_user: dict = Depends(get_current_user)):
     """取登录二维码（Base64 PNG）。
 
     用户侧的体验就是：点「登录小红书」→ 网页弹出二维码 → 手机扫码 → 状态自动变绿。
     不需要桌面环境、不需要浏览器窗口，也不需要用户下载/上传任何文件。
+
+    ⚠️ `refresh=1` 才真的向 MCP 重新取码。默认（0）返回**缓存**的二维码，因为
+    上游 issue #799：重复调用 `get_login_qrcode` 会新建浏览器、取消旧会话，
+    用户刚在手机上确认的登录/设备验证上下文会被顶掉（表现为"扫码后没反应"）。
+    所以"自动刷新"是禁止的，只有用户点「重新获取二维码」时才传 refresh=1。
     """
     import asyncio
 
-    return await asyncio.to_thread(xhs_manager.login_qrcode, current_user["user_id"])
+    return await asyncio.to_thread(xhs_manager.login_qrcode,
+                                   current_user["user_id"], bool(refresh))
 
 
 @router.post("/clear")
