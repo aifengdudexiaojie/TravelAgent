@@ -2,12 +2,16 @@
 /**
  * 小红书登录状态条 + 扫码登录弹窗（放在「生成旅游攻略」标题旁边）
  *
- * 登录：点「登录小红书」→ 后端调 MCP 的 get_login_qrcode → 网页弹二维码
- *      → 用户用小红书 App 扫码 → 前端每 2.5 秒查状态 → 变绿、弹窗自动关闭。
+ * 登录有两条路：
+ *  ① **网页扫码登录（推荐，默认走这条）**：后端自己开一个浏览器（`/api/xhs/login/start`），
+ *     每次探测都返回**当前**二维码 —— 小红书自己的码约 1~2 分钟就换一次，所以
+ *     "每次都是新图"才能保证用户扫到的不是废码；出现二次设备安全验证时，
+ *     后端会把那一张码也返回（state=verify），前端提示"再扫这张"。
+ *     登录成功后后端直接按 MCP 的格式写 cookies.json，状态灯立刻变绿。
+ *  ② MCP 的静态二维码（`/api/xhs/qrcode`）：后端没装 playwright 时自动退回，
+ *     但它只截一张图、也检测不到二次验证（上游 issue #799），所以只作备用。
  *
- * 关于「实例正在启动」：首次运行 MCP 会下载无头浏览器（约 150MB），启动要一会儿。
- * 所以后端把启动改成**后台进行**、接口立刻返回 pending，前端在这里持续轮询直到出图 ——
- * 不会再出现"卡很久最后显示不可用"（那是之前阻塞式等待把请求拖超时导致的）。
+ * 无论哪条路：**扫码后在手机上点「确认登录」才算完成**。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiErrorMessage, xhsApi } from '@/lib/api'
@@ -36,6 +40,12 @@ const qrWaitSec = ref(0)
 const qrError = ref('')               // 取码硬失败（例如缺可执行文件）
 const qrLogTail = ref('')
 const showLogTail = ref(false)
+/** ① 实时扫码登录（服务器自建浏览器）相关状态 */
+const liveMode = ref(false)           // 当前是否走"实时二维码"这条路
+const liveState = ref('')             // qr / verify / waiting / logged_in / unavailable / error
+const liveNote = ref('')              // 后端给的状态说明
+const liveAvail = ref<any>(null)      // /login/available 的结果
+const qrSeq = ref(0)                  // 第几张码（用来提示用户"这是最新的一张"）
 /** 缺系统运行库时的"服务器上一键修复"命令（后端装好依赖后为空） */
 const qrInstallHint = ref('')
 const copiedHint = ref('')
@@ -152,7 +162,64 @@ function resetQrState() {
   showDiag.value = false
   diagAutoOpen.value = false
   showLogTail.value = false
+  liveState.value = ''
+  liveNote.value = ''
+  qrSeq.value = 0
   slowRetry = 0
+}
+
+/** 开始/继续「实时扫码登录」（服务器自己开浏览器出码） */
+async function startLiveLogin() {
+  try {
+    const resp = await xhsApi.liveLoginStart()
+    applyLive(resp.data || {})
+    return liveState.value !== 'unavailable'
+  } catch (err: any) {
+    qrError.value = apiErrorMessage(err, '启动扫码登录失败')
+    return false
+  }
+}
+
+/** 把后端返回的实时状态渲染出来；返回 true 表示这条链路可用 */
+function applyLive(data: any) {
+  const state = data.state || ''
+  if (state === 'unavailable') {
+    liveMode.value = false
+    liveState.value = 'unavailable'
+    liveNote.value = data.message || '服务器未安装 playwright，已退回 MCP 二维码方案'
+    return false
+  }
+  liveMode.value = true
+  liveState.value = state
+  liveNote.value = data.message || ''
+  if (data.image_base64) {
+    qrImage.value = `data:${data.mime || 'image/png'};base64,${data.image_base64}`
+    qrSeq.value += 1
+    qrShownAt.value = qrShownAt.value || Date.now()
+    qrError.value = ''
+    qrExpiresAt.value = ''            // 实时链路没有"过期"概念：每次探测都是最新的码
+    qrPending.value = false
+  }
+  if (state === 'error') {
+    qrError.value = data.message || '登录浏览器出错'
+    if (data.hint) qrError.value += `\n${data.hint}`
+  }
+  return true
+}
+
+/** 探测实时登录进度（每 2.5 秒一次；每次都会带回最新那张二维码） */
+async function probeLive() {
+  try {
+    const resp = await xhsApi.liveLoginProbe()
+    const data = resp.data || {}
+    if (data.state === 'closed') {          // 会话没了（被回收/超时）→ 重建
+      return await startLiveLogin()
+    }
+    return applyLive(data)
+  } catch (err: any) {
+    liveNote.value = apiErrorMessage(err, '登录状态探测失败')
+    return true
+  }
 }
 
 async function openQr() {
@@ -166,7 +233,9 @@ async function openQr() {
     }
     await handleClear(false)
   }
-  await fetchQr()
+  // 先试推荐路径（服务器自己开浏览器出实时码）；不可用再退回 MCP 的静态二维码
+  const live = await startLiveLogin()
+  if (!live) await fetchQr(true)
 }
 
 /** 取二维码：ok=出图；pending=实例启动中（继续轮询）；否则是硬失败
@@ -268,6 +337,20 @@ async function handleStop() {
 
 function closeQr() {
   showQr.value = false
+  if (liveMode.value && liveState.value !== 'logged_in') {
+    xhsApi.liveLoginStop().catch(() => {})     // 关掉服务器上的登录浏览器，释放内存
+  }
+}
+
+/** 换一张新二维码（实时链路=重新打开登录页；MCP 链路=refresh=1） */
+async function refreshQr() {
+  if (!liveMode.value) return fetchQr(true)
+  try {
+    const resp = await xhsApi.liveLoginRefresh()
+    applyLive(resp.data || {})
+  } catch (err: any) {
+    qrError.value = apiErrorMessage(err, '刷新二维码失败')
+  }
 }
 
 onMounted(() => {
@@ -289,11 +372,19 @@ onMounted(() => {
     }
 
     if (!showQr.value) return
+    // ① 实时扫码登录：每次探测都会带回**最新**的二维码（不会扫到过期码），
+    //    出现二次验证时后端会告知 verify，登录成功后后端写 cookies 并结束会话。
+    if (liveMode.value) {
+      if (liveState.value === 'logged_in') return
+      const usable = await probeLive()
+      if (!usable) await fetchQr(true)          // 实时链路不可用 → 退回 MCP 方案
+      return
+    }
+    // ② MCP 静态二维码（备用）：
     // 启动中/还没出图 → 每次轮询都重试取码（此时还没有登录会话，重复取码无副作用）；
     // 硬失败 → 放慢到每 ~7.5 秒重试一次（避免刷屏）。
     // ⚠️ 一旦出图就**绝不自动重新取码**：重复向 MCP 取码会新建浏览器、取消旧会话
-    //    （上游 issue #799），用户刚在手机上确认的登录会被顶掉 —— 过去那个
-    //    "过期自动换新"正是"扫码后毫无反应"的元凶之一。过期只提示，由用户点按钮。
+    //    （上游 issue #799），用户刚在手机上确认的登录会被顶掉。
     if (qrPending.value || !qrImage.value) {
       if (!qrError.value || slowRetry++ % 3 === 0) await fetchQr()
     }
@@ -400,13 +491,21 @@ onBeforeUnmount(() => {
           <p v-if="qrImage" class="mt-3 text-xs text-gray-500 text-center">
             打开小红书 App →「我」→ 右上角扫一扫
           </p>
-          <p v-if="qrRemain !== null && qrImage" class="mt-1 text-xs text-center"
+          <p v-if="qrImage && liveMode" class="mt-1 text-[11px] text-gray-400 text-center">
+            这是第 {{ qrSeq }} 次读取的<b>最新</b>二维码（服务器实时读取，每 2.5 秒自动更新，不会扫到过期码）
+          </p>
+          <!-- ② 二次设备安全验证：把那张要扫的码给出来（上游 MCP 做不到这点） -->
+          <div v-if="liveMode && liveState === 'verify'" class="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 text-center leading-relaxed">
+            <b>小红书要求二次安全验证</b><br />
+            请再扫上面这张码（这是新的验证码，不是刚才那张），完成后会自动变绿。
+          </div>
+          <p v-if="!liveMode && qrRemain !== null && qrImage" class="mt-1 text-xs text-center"
              :class="qrExpired ? 'text-amber-600' : 'text-gray-400'">
             {{ qrExpired
               ? '二维码已过期：请点下方「🔄 重新获取二维码」'
               : `二维码有效期剩余 ${qrRemain} 秒` }}
           </p>
-          <p v-if="qrExpired && qrImage" class="mt-1 text-[11px] text-amber-600 text-center">
+          <p v-if="!liveMode && qrExpired && qrImage" class="mt-1 text-[11px] text-amber-600 text-center">
             重新获取会让刚才的扫码失效，请用新二维码再扫一次
           </p>
           <!-- 扫码后没动静：主动引导排查（而不是让用户干等） -->
@@ -414,21 +513,22 @@ onBeforeUnmount(() => {
             已经等了 {{ qrWaitSeconds }} 秒还没登录成功 —— 请看下面的排查提示
           </p>
           <!-- MCP 侧已判定"未检测到扫码"：直接说清楚，别让用户继续等 -->
-          <p v-if="scanEnded && !loggedIn" class="mt-2 text-[11px] text-amber-700 text-center">
+          <p v-if="scanEnded && !loggedIn && !liveMode" class="mt-2 text-[11px] text-amber-700 text-center">
             服务端这次登录会话已结束（未检测到扫码）—— 请点「🔄 重新获取二维码」再扫一次
+          </p>
+          <p v-if="liveMode && liveState === 'waiting' && !qrImage" class="mt-2 text-[11px] text-gray-500 text-center">
+            {{ liveNote || '正在打开登录页…' }}
           </p>
           <p v-if="loggedIn" class="mt-2 text-xs text-green-600 font-medium">✅ 已登录，正在关闭…</p>
         </div>
 
-        <!-- 扫码后无反应：把最常见的原因和两条出路直接写清楚 -->
-        <div v-if="scanStuck && !qrError" class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 leading-relaxed">
+        <!-- 扫码后无反应：把最常见的原因写清楚 -->
+        <div v-if="scanStuck && !qrError && !liveMode" class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 leading-relaxed">
           <p class="font-medium">手机上确认登录了吗？</p>
           <p>① 小红书扫码后，需要在手机上点<b>「确认登录」</b>才算完成。</p>
-          <p>② 如果手机提示<b>「安全验证 / 请再次扫码」</b>：这是小红书的风控二次验证，
-             上游 MCP 目前不处理这种弹窗（已知问题），扫码方式会卡住 —— 请改用下面的
-             <b>「📄 导入 cookies.json」</b>：在你自己电脑上登录一次，把这个文件导进来即可。</p>
-          <p>③ 扫码期间请不要反复点刷新：重新取码会让刚才的登录失效。</p>
-          <p v-if="waitingScan" class="text-amber-700">当前状态：服务端正在等你扫码（最长 4 分钟），期间不会打扰登录流程。</p>
+          <p>② 若手机提示「安全验证 / 请再次扫码」，请点「🔄 重新获取二维码」——
+             该走的推荐路径（服务器实时出码）会把那张验证码也显示出来。</p>
+          <p>③ 扫码期间请不要反复点刷新：重新取码会让刚才的扫码失效。</p>
         </div>
 
         <!-- 登录诊断（MCP 原话 + 实例日志尾部）：排查"扫码后没反应"用 -->
@@ -470,16 +570,19 @@ onBeforeUnmount(() => {
 
         <div class="mt-4 flex flex-wrap items-center gap-2 justify-center">
           <button
-            @click="fetchQr(true)"
+            @click="refreshQr"
             :disabled="fetchingQr"
-            title="重新向小红书要一张新二维码（会让上一次的扫码失效，只在二维码过期或确定没扫过时点）"
+            :title="liveMode
+              ? '重新打开登录页，换一张最新二维码'
+              : '重新向小红书要一张新二维码（会让上一次的扫码失效，只在二维码过期或确定没扫过时点）'"
             class="px-3 py-1.5 text-xs rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition disabled:opacity-50"
           >{{ fetchingQr ? '获取中…' : '🔄 重新获取二维码' }}</button>
           <button
+            v-if="!liveMode"
             @click="fileInput?.click()"
             :disabled="importing"
             class="px-3 py-1.5 text-xs rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 transition disabled:opacity-50"
-            title="迁移已有登录态时使用：把本机登录好的 cookies.json 导进来"
+            title="备用方案：把本机登录好的 cookies.json 导进来（一般不需要）"
           >{{ importing ? '导入中…' : '📄 导入 cookies.json' }}</button>
           <button
             v-if="loggedIn"
@@ -492,8 +595,14 @@ onBeforeUnmount(() => {
 
         <p v-if="notice" class="mt-3 text-xs text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2">{{ notice }}</p>
         <p class="mt-3 text-[11px] text-gray-400 leading-relaxed">
-          首次登录时服务器要下载无头浏览器（约 150MB），可能等 1~2 分钟，属正常现象。<br />
-          扫码后请在手机上点「确认登录」，并<b>不要</b>刷新二维码（刷新会让这次扫码失效）。<br />
+          <template v-if="liveMode">
+            二维码由服务器上的浏览器<b>实时</b>读取（每 2.5 秒刷新），扫码后请在手机上点「确认登录」。<br />
+            若小红书弹出「安全验证 / 请再次扫码」，本页会把那张码也显示出来 —— 再扫一次即可。<br />
+          </template>
+          <template v-else>
+            首次登录时服务器要下载无头浏览器（约 150MB），可能等 1~2 分钟，属正常现象。<br />
+            扫码后请在手机上点「确认登录」，并<b>不要</b>刷新二维码（刷新会让这次扫码失效）。<br />
+          </template>
           登录状态只保存在你自己的账号目录里，与其他用户互不影响；同一个账号不要同时在别处登录网页版。
         </p>
       </div>

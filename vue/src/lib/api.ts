@@ -342,9 +342,29 @@ export const xhsApi = {
   clear(): Promise<AxiosResponse> {
     return http.post('/xhs/clear')
   },
+  /** 网页扫码登录（推荐）：服务器自己开浏览器，返回**实时**二维码 */
+  liveLoginStart(): Promise<AxiosResponse> {
+    return http.post('/xhs/login/start', {}, { timeout: 180000 })
+  },
+  /** 探测登录进度：每次都是最新二维码；二次验证时返回那张码（state=verify） */
+  liveLoginProbe(): Promise<AxiosResponse> {
+    return http.get('/xhs/login/probe', { timeout: 180000 })
+  },
+  /** 换一张新二维码 */
+  liveLoginRefresh(): Promise<AxiosResponse> {
+    return http.post('/xhs/login/refresh', {}, { timeout: 180000 })
+  },
+  /** 关闭登录浏览器 */
+  liveLoginStop(): Promise<AxiosResponse> {
+    return http.post('/xhs/login/stop')
+  },
+  /** 网页扫码登录是否可用（不可用则退回 MCP 静态二维码） */
+  liveLoginAvailable(): Promise<AxiosResponse> {
+    return http.get('/xhs/login/available')
+  },
   /** 桌面环境备用：拉起登录程序弹浏览器扫码 */
   login(): Promise<AxiosResponse> {
-    return http.post('/xhs/login')
+    return http.post('/xhs/login/desktop')
   },
   /** 导入 cookies.json（无桌面服务器上替代扫码登录） */
   importCookies(cookies: string): Promise<AxiosResponse> {

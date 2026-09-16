@@ -42,40 +42,83 @@ xiaohongshumcp/
 │ 输入旅行需求 …（未登录时输入框与「开始规划」禁用，并提示先登录）        │
 └──────────────────────────────────────────────────────────────────────┘
                      ↓ 点击「登录小红书」
-        ┌───────────────────────────────┐
-        │  📱 用小红书 App 扫码登录      │
-        │   ┌───────────────┐           │   ← 二维码由 MCP 生成，后端转 Base64
-        │   │   ▓▓▒▒ QR ▒▒▓▓│           │      直接显示在网页里（无需桌面、无需弹窗）
-        │   └───────────────┘           │
-        │  有效期剩余 118 秒（过期后点按钮重新获取）│
-        │  [🔄 重新获取二维码] [📄 导入 cookies]│
-        └───────────────────────────────┘
+        ┌───────────────────────────────────────────┐
+        │  📱 用小红书 App 扫码登录                  │
+        │   ┌───────────────┐                       │
+        │   │   ▓▓▒▒ QR ▒▒▓▓│  ← 服务器**实时**读取 │
+        │   └───────────────┘    每 2.5 秒自动更新   │
+        │  这是第 N 次读取的最新二维码（不会扫到过期码）│
+        │  [🔄 重新获取二维码] [退出登录]            │
+        └───────────────────────────────────────────┘
 ```
 
 1. 用户打开攻略页 → 前端每 2.5 秒轮询 `GET /api/xhs/status`（**只读，不会拉起实例**）
 2. 未登录时：状态灯灰色/红色，**「开始规划」被禁用**并说明原因
-3. 点「🔐 登录小红书」→ `GET /api/xhs/qrcode`：
-   * 后端为该用户启动**自己的** MCP 实例（独立工作目录 + 独立端口，首次约 5–10 秒）
-   * 调 MCP 的 `get_login_qrcode` 工具拿到二维码（`image/png` 的 Base64）
-   * 前端弹窗展示 → **用户用小红书 App 扫码，并在手机上点「确认登录」**
-   * 前端每 2.5 秒查一次状态，登录成功后**自动关闭弹窗并变绿**（显示小红书用户名）
-   * 二维码过期**不会自动换新**（这是刻意的，见下面的"扫码后无反应"）：只提示，由用户点
-     「🔄 重新获取二维码」；重复取码会取消当前登录会话
-4. 绿灯后即可生成攻略；分析走该用户自己的实例（`summary_task` → `mcp_url_for(user_id)`）
-5. 换号：点「🔄 换个账号」→ 确认后自动退出登录（删该用户 cookies）并弹出新二维码
-6. 省资源：点「停止实例」或等 30 分钟空闲自动回收；下次登录会重新拉起
+3. 点「🔐 登录小红书」→ `POST /api/xhs/login/start`（**推荐路径，见下节**）：
+   * 服务器启动一个浏览器打开小红书登录页，把**当前**二维码返回给前端
+   * 前端每 2.5 秒 `GET /api/xhs/login/probe` —— **每次都带回最新那张码**
+     （小红书自己的码约 1~2 分钟换一次，所以"每次都是新图"才保证扫到的不是废码）
+   * 用户用小红书 App 扫码 → **手机上点「确认登录」**
+   * 若小红书弹出**二次设备安全验证**，后端会把那张验证码也返回，页面明确提示
+     "请再扫这张"，扫完即完成（这一步上游 MCP 做不到，见 issue #799）
+   * 登录成功后后端按 MCP 的 v2 格式写入 `cookies.json`（保留 seed），状态灯立刻变绿
+4. 绿灯后即可生成攻略；分析走该用户自己的 MCP 实例（`summary_task` → `mcp_url_for(user_id)`）
+5. 换号：点「🔄 换个账号」→ 确认后自动退出登录（删该用户 cookies）并重新出码
+6. 省资源：点「停止实例」或等 30 分钟空闲自动回收；登录浏览器在弹窗关闭时即关掉
 
 > ⚠️ 官方提醒：**同一个小红书账号不要同时在多个网页端登录**，否则会把这里的登录态顶下线
 > （用手机 App 查看账号信息不受影响）。
 
-### 扫码后无反应？（2026-09 实测的三个真因）
+### 为什么不用 MCP 自带的 `get_login_qrcode`（我们改成了自建登录）
 
-| 现象 | 真因 | 处理 |
+上游 v2.5.0 的实现有三个硬伤，都会表现成"**扫码后毫无反应**"：
+
+| 上游行为（源码依据） | 后果 |
+|----------------------|------|
+| `GetLoginQrcode` 只截**一张**静态图（`.login-container .qrcode-img`），返回的"在 X 前扫码"是**会话超时**（`now + 4m`），不是二维码有效期 | 小红书自己的码约 1~2 分钟就换/失效，用户稍慢就扫到废码：手机没反应、服务端也检测不到 |
+| 只等 `.main-container .user .link-wrapper .channel`，**不检查**二次验证弹窗 `.r-captcha-modal .qrcode-img`（[issue #799](https://github.com/xpzouying/xiaohongshu-mcp/issues/799) 仍在） | 触发风控时要扫第二张码，MCP 永远等不到登录元素 → cookies 永远存不下来 |
+| 重复调用 `get_login_qrcode` 会**新建浏览器并取消旧会话**（`login_session.go` 注释写明） | 之前前端"过期自动换码"等于把用户刚确认的会话顶掉 |
+| `CheckLoginStatus` 每次调用都 `newBrowser()`（实测 ~4 秒、几百 MB） | 打开攻略页就每几秒启一个 Chromium，小内存云主机直接被拖垮 |
+
+现在我们的做法（`services/xhs_login_browser.py`）：
+
+* **我们自己的浏览器、我们自己读码**：每次探测都重新读一次 `src`，页面上永远是最新那张码；
+  探测只是读一个属性，**不会重置登录会话**，所以刷新二维码是安全的；
+* **二次验证码也支持**：检测到 `.r-captcha-modal .qrcode-img` 就把那张码返回给前端；
+* **登录判定 + 落盘**：`.channel` 元素出现（或重载一次后出现）即视为成功，
+  把 `ctx.cookies()` 按 MCP 的 v2 结构写入 `xiaohongshumcp/users/<user_id>/cookies.json`
+  （保留文件里已有的 `seed`，因为 MCP 用它绑定浏览器指纹）；
+  MCP 每次新建浏览器都会 `LoadCookies()`，所以**不需要重启实例**就生效；
+* **指纹一致**：MCP 在 Linux 上会伪装成 Windows Chrome（`WithFingerprint("")`），
+  我们的登录浏览器用同一套 UA/locale/时区，避免同一份 cookie 在不同指纹下被判风控；
+* MCP 的静态二维码路径保留为**备用**（没装 playwright 时自动退回）。
+
+### 部署这一步（服务器上执行一次）
+
+```bash
+cd /opt/travelagent && git pull
+sudo bash deploy/install-xhs-login.sh          # 装 playwright + Xvfb（+ 复用已有 Chromium）
+bash deploy/install-xhs-login.sh --check       # 自检
+sudo systemctl restart travel-agent-api
+```
+
+脚本做四件事：① 复用 MCP 已下载的 Chromium（省一次 150MB 下载）；② 装 `playwright`；
+③ 建 `travel-agent-xvfb` 常驻虚拟显示（有头模式更接近官方推荐的"桌面登录"路径）；
+④ 给后端单元补一行 `Environment=DISPLAY=:99`。
+
+* 想改回无头模式：`.env` 里加 `XHS_LOGIN_HEADLESS=true` 后重启后端；
+* `XHS_LOGIN_MAX_SESSIONS`（默认 2）：同时进行的登录浏览器上限；
+* `XHS_LOGIN_IDLE`（默认 900 秒）：登录浏览器闲置多久自动关闭。
+
+### 排错：扫码后没反应
+
+| 现象 | 原因 | 处理 |
 |------|------|------|
-| 手机扫码确认后，页面一直不变绿；MCP 日志只有 `等待扫码登录，会话 #1，超时 4m0s` | **① 查状态把"等扫码"的会话挤掉了（主因）**：上游 `CheckLoginStatus` 每次调用都 `newBrowser()` **新起一个 Chromium**（导航 `/explore` + sleep 1s，实测每次 ~4 秒），而登录会话要靠另一个浏览器活 4 分钟、每 500ms 检测扫码。小内存云主机上每 2.5 秒轮询一次 = 不停启浏览器，扫码检测直接失灵 | 已修：**发码后进入"静默期"，期间一个 MCP 请求都不发**，只看 `cookies.json` 与 MCP 日志判断结果；常态查状态也做了 30 秒缓存（`XHS_STATUS_CACHE`） |
-| 手机上没有出现"确认登录"，或扫完就没了反应 | **② 手机上没点「确认登录」**（扫码本身不算完成） | 扫码后在手机上点确认；弹窗里有倒计时与排查提示 |
-| 手机提示「安全验证 / 请再次扫码」 | **③ 小红书的二次设备安全验证**（风控条件触发，不是每次都有）：需要再扫一张 `.r-captcha-modal` 里的新码，而 MCP 只返回第一张码、也不检测验证弹窗（上游 [issue #799](https://github.com/xpzouying/xiaohongshu-mcp/issues/799) 仍未修复） | 改用 **cookies.json 导入**（见第六节）：在你自己电脑上登录一次（有真实浏览器窗口，能完成二次验证），把 cookies.json 导进来 |
-| 点了「导入 cookies.json」之后一直没变化 | 导入的登录态已过期 | 重新在电脑上登录刷新该文件，再导入 |
+| 页面一直不变绿，二维码却在变 | 手机上没点「确认登录」 | 扫码后在手机上确认；这是最常见的原因 |
+| 出现"小红书要求二次安全验证"提示 | 小红书风控要求再扫一张码（**这是正常的**） | 直接扫页面上那张新码即可 |
+| 弹窗里显示"服务器未安装 playwright，已退回 MCP 二维码方案" | 没跑安装脚本 | `sudo bash deploy/install-xhs-login.sh` |
+| 提示"无头模式下启动失败" | 没有 DISPLAY 且无头启动失败 | 跑安装脚本（建 Xvfb），或查 `deploy/install-xhs-login.sh --check` |
+| MCP 方案下扫码没反应 | 上游只截一张码、也不处理二次验证 | 用推荐路径（实时扫码）；备用方案见第六节 cookies 导入 |
 
 我们这边为此修掉的三个隐患（都会造成"扫码后无反应"）：
 
@@ -99,6 +142,7 @@ xiaohongshumcp/
 
 弹窗里的「登录诊断」会显示 MCP 状态与实例日志尾部；扫码后 60 秒还没成功会自动展开
 并给出上面这些提示；MCP 判定会话结束时也会直接提示"请重新获取二维码"。
+（这些是**备用路径**的保障；推荐路径是上一节的自建实时扫码登录。）
 
 ## 三、配置项
 
@@ -109,11 +153,15 @@ xiaohongshumcp/
 | `XHS_MAX_INSTANCES` | `3` | 同时在线实例上限（每个 ≈ 一个 Chromium） |
 | `XHS_IDLE_TIMEOUT` | `1800` | 空闲回收秒数（0=不回收） |
 | `XHS_START_TIMEOUT` | `180` | 实例启动等待秒数（首次要下载 ~150MB 浏览器，别调太小） |
+| `XHS_LOGIN_HEADLESS` | `auto` | 扫码登录浏览器是否有头。`auto`=有 `DISPLAY` 就用有头（Xvfb），否则无头 |
+| `XHS_LOGIN_MAX_SESSIONS` | `2` | 同时进行的扫码登录浏览器上限（每个 ≈ 一个 Chromium） |
+| `XHS_LOGIN_IDLE` | `900` | 登录浏览器闲置多少秒自动关闭 |
+| `XHS_LOGIN_BROWSER` | 空 | 指定登录用浏览器路径（默认复用 MCP 下载的那个） |
 | `XHS_STATUS_TIMEOUT` | `8` | 查登录状态的 MCP 超时秒数（前端每 2.5s 轮询，必须短；超时返回"MCP 正忙"） |
 | `XHS_STATUS_CACHE` | `30` | 登录状态探测结果的缓存秒数。⚠️ 上游每次探测都会**新起一个 Chromium**（~4s），所以不能每次都真查 |
-| `XHS_SCAN_WINDOW` | `300` | 发出二维码后的"静默期"秒数：这段时间内**完全不查 MCP**，只靠 cookies.json 与日志判断（要覆盖 MCP 自己的 4 分钟等待窗口） |
-| `XHS_QR_CACHE` | `120` | 二维码缓存秒数：这段时间内重复请求**不会**再向 MCP 取码（重复取码会取消登录会话） |
-| `XHS_HEADLESS` | `true` | 实例是否无头；调试想看到浏览器时设 `false` |
+| `XHS_SCAN_WINDOW` | `300` | 备用路径：发出二维码后的"静默期"秒数，期间完全不查 MCP，只靠 cookies.json 与日志判断 |
+| `XHS_QR_CACHE` | `120` | 备用路径：二维码缓存秒数（重复向 MCP 取码会取消登录会话） |
+| `XHS_HEADLESS` | `true` | MCP 实例是否无头 |
 | `XHS_MCP_URL` | `http://localhost:18060/mcp` | 共享模式下的默认实例地址 |
 
 ## 四、接口
@@ -121,10 +169,15 @@ xiaohongshumcp/
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/xhs/status` | 当前用户状态（只读）：`logged_in` / `mcp_running` / `port` / `workdir` / `platform` / `exe_available` / `exe_error` / `message` |
-| GET | `/api/xhs/qrcode` | **取登录二维码**（Base64 PNG + `expires_at`）：网页直接展示，用户手机扫码 |
+| POST | `/api/xhs/login/start` | **推荐**：开始/继续扫码登录，返回**当前**二维码（state=qr/verify/logged_in/waiting/unavailable） |
+| GET | `/api/xhs/login/probe` | 探测登录进度，每次都带回最新二维码；二次验证时返回那张验证码 |
+| POST | `/api/xhs/login/refresh` | 换一张新二维码（安全：登录会话就是我们自己的浏览器） |
+| POST | `/api/xhs/login/stop` | 关闭登录浏览器（释放内存） |
+| GET | `/api/xhs/login/available` | 网页扫码登录是否可用（没装 playwright 时前端自动退回备用方案） |
+| GET | `/api/xhs/qrcode` | 备用：MCP 的静态二维码（Base64 + `expires_at`），`?refresh=1` 强制重新取码 |
 | POST | `/api/xhs/clear` | 退出登录（换号用）：调 MCP `delete_cookies` + 删该用户 cookies + 停实例 |
-| POST | `/api/xhs/cookies` | 导入 cookies.json（**高级**：迁移已有登录态），body：`{"cookies": "<文件内容>"}` |
-| POST | `/api/xhs/login` | 桌面环境备用：拉起登录程序弹浏览器扫码 |
+| POST | `/api/xhs/cookies` | 备用：导入 cookies.json，body：`{"cookies": "<文件内容>"}` |
+| POST | `/api/xhs/login/desktop` | 桌面环境备用：拉起登录程序弹浏览器扫码 |
 | POST | `/api/xhs/mcp/start` | 只启动实例（不起登录窗口） |
 | POST | `/api/xhs/mcp/stop` | 停止实例，释放内存/端口 |
 | POST | `/api/xhs/logout` | 停止实例（不删登录态） |
@@ -246,16 +299,22 @@ curl -s -H "Authorization: Bearer <你的token>" http://127.0.0.1:8088/api/xhs/q
 > `docker pull xpzouying/xiaohongshu-mcp`，把 `./data` 挂到该用户的工作目录、端口映射到实例端口。
 > 本项目的 `services/xhs_manager.py` 默认按"本地二进制"方式拉起；用容器时把 `XHS_MCP_EXE`
 > 指向你自己的启动脚本（脚本内 `docker run`）即可接入。
+>
+> ⚠️ 用 Docker 跑本项目（不是 MCP）时，application 容器里也要能跑扫码登录浏览器：
+> 在镜像里加 `pip install playwright && playwright install --with-deps chromium`，
+> 并且容器内要有 `DISPLAY`（或设 `XHS_LOGIN_HEADLESS=true` 走无头）。否则那个容器只能走
+> 备用方案；此时可以直接把登录容器和业务容器分开——登录浏览器只要把 `cookies.json`
+> 写到同一个挂载卷里就行（MCP 每次新建浏览器都会读它）。
 
-## 六、导入 cookies.json（**服务器扫码卡住时的正解**）
+## 六、导入 cookies.json（备用方案）
 
-通常直接扫码即可；但如果你遇到下面任一情况，扫码这条路走不通，就用本节的办法：
+扫码登录是**推荐路径**（第二节），正常情况下不需要本节；以下情况才用：
 
-* 手机扫码后出现**二次设备安全验证**（"请再次扫码"），而上游 MCP 不处理这种弹窗（issue #799）；
-* 你的账号/网络环境不方便在服务器上扫码。
+* 服务器装不了 playwright 与浏览器（机器太小、装不了依赖），只能用 MCP 的静态二维码方案；
+* 或者你想把**另一台机器**上已有的登录态直接搬过来（省一次扫码）。
 
-思路：**在你自己有桌面的电脑上登录一次（会弹出真实浏览器窗口，能完成二次验证），
-把生成的 `cookies.json` 导到服务器上。** 由于导入是由浏览器读本地文件再 POST，
+思路：在你自己有桌面的电脑上登录一次（会弹出真实浏览器窗口，能完成二次验证），
+把生成的 `cookies.json` 导到服务器上。由于导入是由浏览器读本地文件再 POST，
 所以在网页上点几下就能完成，不需要 scp。
 
 步骤：
@@ -304,7 +363,9 @@ curl -s -X POST http://127.0.0.1:8088/api/xhs/cookies \
 | 状态里 `exe_error` 提示"未找到 linux 可执行文件" | 只放了 Windows 版 / 文件名不对 | 确认文件名为 `xiaohongshu-mcp-linux-amd64` 且 `chmod +x` |
 | `chrome: error while loading shared libraries: libatk-1.0.so.0 ...` | **服务器缺 Chromium 的系统库**（MCP 只下载浏览器，不装依赖） | 执行一次 `sudo bash deploy/install-xhs-deps.sh`，见第五节「浏览器运行库」；页面上也会直接显示这条命令 |
 | 日志 `Failed to launch the browser` + 上面那条缺库报错 | 同一条问题，`libatk-1.0.so.0` 只是第一个缺的库 | 同上（装完再用 `ldd ... \| grep "not found"` 自检） |
-| 二维码扫了、手机也确认了，页面就是不变绿 | ① 手机上没点「确认登录」；② 触发了小红书的**二次设备安全验证**（上游 MCP 不处理，issue #799） | 先看弹窗里的「登录诊断」（MCP 原话 + 实例日志）；确认是二次验证就改用 **cookies.json 导入**（第六节） |
+| 二维码扫了、手机也确认了，页面就是不变绿（**备用** MCP 方案） | 上游只截一张码、也不处理二次验证；且每次查状态都新起 Chromium | 改用**推荐路径**（实时扫码）；页面上的「登录诊断」会显示 MCP 原话与实例日志 |
+| 弹窗提示"服务器未安装 playwright" | 没跑安装脚本 | `sudo bash deploy/install-xhs-login.sh`，然后重启后端 |
+| 提示"关闭登录浏览器"后立刻又要点登录 | 会话被回收（`XHS_LOGIN_IDLE`，默认 15 分钟） | 重新点「登录小红书」即可（会重新开一个浏览器） |
 | 二维码过期后没自动刷新 | 刻意如此：重复取码会取消当前登录会话（issue #799） | 点「🔄 重新获取二维码」用新码重扫 |
 | 状态灯长时间停在"未登录"且页面无变化 | 以前 `check_login_status` 用 120s 超时被 MCP 挂住 | 已修：8 秒超时（`XHS_STATUS_TIMEOUT`）并返回"MCP 正忙"；升级到最新代码即可 |
 | **弹窗一直显示「实例启动中…」** | 首次运行 MCP 要下载无头浏览器（~150MB），启动较慢（正常 1–2 分钟） | 等它出图即可；超过 3 分钟就到 `logs/xhs-mcp-<user_id>.log` 看进度，或用 `XHS_START_TIMEOUT` 调大等待 |

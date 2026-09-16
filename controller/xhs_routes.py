@@ -4,11 +4,14 @@
 前端「生成旅游攻略」页顶部显示登录状态并据此决定能否开始规划：
 
     GET  /api/xhs/status          当前用户状态（已登录？实例在跑？平台？为什么起不来？）
-    GET  /api/xhs/qrcode          **取登录二维码（推荐，云上也用这个）** → 前端弹窗展示，手机扫码
-                                  ?refresh=1 强制重新取码（默认返回缓存的码，见下方说明）
+    GET  /api/xhs/qrcode          MCP 的静态二维码（备用方案）
+    POST /api/xhs/login/start     **网页扫码登录（推荐）**：服务器自己开浏览器，返回实时二维码
+    GET  /api/xhs/login/probe     探测登录进度：每次返回**最新**二维码 / 二次验证码 / 已登录
+    POST /api/xhs/login/refresh   换一张新二维码（安全：登录会话就是我们自己的浏览器）
+    POST /api/xhs/login/stop      关闭登录浏览器
     POST /api/xhs/clear           退出登录（换号用；会删掉该用户的 cookies）
-    POST /api/xhs/cookies         导入 cookies.json（迁移已有登录态的高级选项）
-    POST /api/xhs/login           桌面环境备用：拉起登录程序弹浏览器扫码
+    POST /api/xhs/cookies         导入 cookies.json（备用方案）
+    POST /api/xhs/login/desktop   桌面环境备用：拉起登录程序弹浏览器扫码
     POST /api/xhs/mcp/start       启动该用户的 MCP 实例（登录前也会自动启动）
     POST /api/xhs/mcp/stop        停止该用户的 MCP 实例
     POST /api/xhs/logout          停止实例（不删登录态）
@@ -21,6 +24,7 @@ from pydantic import BaseModel
 
 from auth import get_current_user
 from services import xhs_manager
+from services import xhs_login_browser as live_login
 
 logger = logging.getLogger("controller.xhs")
 
@@ -40,18 +44,68 @@ async def xhs_status(current_user: dict = Depends(get_current_user)):
     return await asyncio.to_thread(xhs_manager.status_for, current_user["user_id"])
 
 
+# ================================================================
+# 网页扫码登录（自建浏览器，实时二维码；推荐路径）
+# ================================================================
+@router.post("/login/start")
+async def xhs_live_login_start(current_user: dict = Depends(get_current_user)):
+    """开始扫码登录：服务器自己开一个浏览器，把**当前**二维码返回给前端。"""
+    import asyncio
+
+    return await asyncio.to_thread(live_login.start, current_user["user_id"])
+
+
+@router.get("/login/probe")
+async def xhs_live_login_probe(current_user: dict = Depends(get_current_user)):
+    """探测登录进度。
+
+    每次都用**最新**的二维码（小红书自己的码约 1~2 分钟就换一次），
+    因此不会出现"MCP 只截一张图、用户扫到过期码"的问题；
+    出现二次设备安全验证时会返回那一张码（state=verify）。
+    """
+    import asyncio
+
+    return await asyncio.to_thread(live_login.probe, current_user["user_id"])
+
+
+@router.post("/login/refresh")
+async def xhs_live_login_refresh(current_user: dict = Depends(get_current_user)):
+    """换一张新二维码（重新打开登录页）。
+
+    与 MCP 的 `get_login_qrcode` 不同，这里换码是安全的：登录会话就是我们自己
+    这个浏览器，不存在"再取一次就把上一个会话关掉"的情况。
+    """
+    import asyncio
+
+    return await asyncio.to_thread(live_login.refresh, current_user["user_id"])
+
+
+@router.post("/login/stop")
+async def xhs_live_login_stop(current_user: dict = Depends(get_current_user)):
+    """关闭登录浏览器（用户关掉弹窗时调用，释放内存）。"""
+    import asyncio
+
+    return await asyncio.to_thread(live_login.stop, current_user["user_id"])
+
+
+@router.get("/login/available")
+async def xhs_live_login_available(current_user: dict = Depends(get_current_user)):
+    """网页扫码登录是否可用（不可用时前端退回 MCP 的静态二维码方案）。"""
+    import asyncio
+
+    info = await asyncio.to_thread(live_login.availability)
+    info["sessions"] = await asyncio.to_thread(live_login.active_sessions)
+    return info
+
+
 @router.get("/qrcode")
 async def xhs_qrcode(refresh: int = 0,
                      current_user: dict = Depends(get_current_user)):
-    """取登录二维码（Base64 PNG）。
-
-    用户侧的体验就是：点「登录小红书」→ 网页弹出二维码 → 手机扫码 → 状态自动变绿。
-    不需要桌面环境、不需要浏览器窗口，也不需要用户下载/上传任何文件。
+    """取登录二维码（Base64 PNG）—— MCP 方案，作为**备用**。
 
     ⚠️ `refresh=1` 才真的向 MCP 重新取码。默认（0）返回**缓存**的二维码，因为
     上游 issue #799：重复调用 `get_login_qrcode` 会新建浏览器、取消旧会话，
     用户刚在手机上确认的登录/设备验证上下文会被顶掉（表现为"扫码后没反应"）。
-    所以"自动刷新"是禁止的，只有用户点「重新获取二维码」时才传 refresh=1。
     """
     import asyncio
 
@@ -81,9 +135,9 @@ async def xhs_import_cookies(req: CookiesPayload,
                                    current_user["user_id"], req.cookies)
 
 
-@router.post("/login")
+@router.post("/login/desktop")
 async def xhs_login(current_user: dict = Depends(get_current_user)):
-    """拉起小红书登录程序（扫码登录）——会为该用户准备独立工作目录与实例。"""
+    """拉起小红书登录程序（扫码登录）——**仅桌面环境**，服务器请用 /login/start。"""
     import asyncio
 
     user_id = current_user["user_id"]

@@ -30,5 +30,9 @@ bcrypt>=4.0.1
 # Elasticsearch
 elasticsearch>=8.12.0
 
+# 小红书「网页扫码登录」：自己驱动浏览器，实时出二维码 + 处理二次设备安全验证
+# （服务器上还需要系统库与虚拟显示：sudo bash deploy/install-xhs-login.sh）
+playwright>=1.40.0
+
 # Embedding（本地模型，可选）
 # sentence-transformers>=2.2.0

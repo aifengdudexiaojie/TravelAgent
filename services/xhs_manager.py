@@ -988,6 +988,26 @@ def _remember_status(user_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def mark_logged_in(user_id: str, message: str = "登录成功（已在服务器浏览器中扫码）") -> Dict[str, Any]:
+    """外部流程（自建扫码登录）完成登录后调用：让状态立刻变绿，不必再等 MCP 探测。"""
+    clear_scan_watch(user_id)
+    inst = instance_for(user_id, touch=False)
+    payload: Dict[str, Any] = {
+        "logged_in": True,
+        "shared": not MULTI_USER,
+        "mcp_url": inst.url if inst is not None else DEFAULT_URL,
+        "mcp_running": bool(inst is not None and inst.alive()),
+        "has_cookie": cookie_present(user_id),
+        "port": inst.port if inst is not None else None,
+        "message": message,
+        "started": True,
+        "login_state": "live_scan",
+        "raw": "",
+    }
+    logger.info("标记为已登录（外部扫码）：user=%s cookie=%s", user_id, payload["has_cookie"])
+    return _remember_status(user_id, payload)
+
+
 def login_status(user_id: str) -> Dict[str, Any]:
     """查询该用户的小红书登录状态。
 
@@ -1028,7 +1048,7 @@ def login_status(user_id: str) -> Dict[str, Any]:
 
     # ---------- ② 常态：走缓存，避免每次轮询都让 MCP 新起一个浏览器 ----------
     cached = cached_status(user_id, STATUS_CACHE_SECONDS)
-    if cached is not None and running:
+    if cached is not None:
         return cached
 
     if MULTI_USER and not running:
@@ -1037,10 +1057,12 @@ def login_status(user_id: str) -> Dict[str, Any]:
         if exe_path is None:
             info["message"] = f"服务器上无法使用小红书服务：{exe_err}"
             info["exe_error"] = exe_err
-        elif not info["has_cookie"]:
-            info["message"] = "尚未启动小红书实例：点「登录小红书」会自动启动并弹出扫码窗口"
+        elif info["has_cookie"]:
+            # 有登录态文件就算已登录：生成攻略时会自动拉起实例（MCP 每次新建浏览器都会加载 cookies）
+            info.update({"logged_in": True, "login_state": "cookie_only",
+                         "message": "已保存登录态；生成攻略时会自动启动小红书服务"})
         else:
-            info["message"] = "检测到已保存的登录态，点「登录小红书」即可启动实例继续使用"
+            info["message"] = "尚未启动小红书实例：点「登录小红书」会自动启动并弹出扫码窗口"
         return info
 
     if inst is not None and not inst.alive():

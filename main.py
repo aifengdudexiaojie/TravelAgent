@@ -77,17 +77,26 @@ async def lifespan(app: FastAPI):
         await asyncio.to_thread(xhs_manager.stop_all)
     except Exception as e:
         logger.warning(f"回收小红书实例失败: {e}")
+    try:
+        from services import xhs_login_browser
+        await asyncio.to_thread(xhs_login_browser.stop_all)      # 关掉扫码登录用的浏览器
+    except Exception as e:
+        logger.warning(f"关闭扫码登录浏览器失败: {e}")
     await memory_store.close()
 
 
 async def _reap_xhs_instances() -> None:
-    from services import xhs_manager
+    from services import xhs_login_browser, xhs_manager
     while True:
         try:
             await asyncio.sleep(300)
             killed = await asyncio.to_thread(xhs_manager.reap_idle)
             if killed:
                 logger.info("回收空闲的小红书 MCP 实例 %d 个", killed)
+            # 扫码登录的浏览器也要回收（用户点了登录却关掉页面时会留着）
+            login_killed = await asyncio.to_thread(xhs_login_browser.reap_idle)
+            if login_killed:
+                logger.info("回收闲置的扫码登录会话 %d 个", login_killed)
         except asyncio.CancelledError:
             raise
         except Exception as e:
