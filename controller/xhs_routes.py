@@ -1,10 +1,11 @@
-"""小红书 MCP 路由：登录 / 状态 / 实例启停
+"""小红书 MCP 路由：登录 / 状态 / 实例启停 / cookies 导入
 ================================================================================
 
 前端「生成旅游攻略」页顶部会显示登录状态，并据此决定能否开始规划：
 
-    GET  /api/xhs/status          当前用户的小红书状态（已登录？实例在跑？模式？）
-    POST /api/xhs/login           拉起登录程序（用户扫码登录自己的小红书）
+    GET  /api/xhs/status          当前用户状态（已登录？实例在跑？平台？为什么起不来？）
+    POST /api/xhs/login           拉起登录程序（**桌面环境**：弹窗扫码）
+    POST /api/xhs/cookies         导入 cookies.json（**无桌面服务器**上的登录方式）
     POST /api/xhs/mcp/start       启动该用户的 MCP 实例（登录前也会自动启动）
     POST /api/xhs/mcp/stop        停止该用户的 MCP 实例
     POST /api/xhs/logout          停止实例（登录态由 cookies.json 保存，重登会覆盖）
@@ -13,6 +14,7 @@
 import logging
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 
 from auth import get_current_user
 from services import xhs_manager
@@ -22,12 +24,31 @@ logger = logging.getLogger("controller.xhs")
 router = APIRouter(prefix="/api/xhs", tags=["小红书 MCP"])
 
 
+class CookiesPayload(BaseModel):
+    """cookies.json 的文本内容（前端 FileReader 读出来直接传，避免 multipart 依赖）。"""
+    cookies: str
+
+
 @router.get("/status")
 async def xhs_status(current_user: dict = Depends(get_current_user)):
     """当前用户的小红书登录/实例状态（前端轮询这个接口点亮绿灯）。"""
     import asyncio
 
     return await asyncio.to_thread(xhs_manager.status_for, current_user["user_id"])
+
+
+@router.post("/cookies")
+async def xhs_import_cookies(req: CookiesPayload,
+                             current_user: dict = Depends(get_current_user)):
+    """导入 cookies.json：无桌面服务器（云端 Linux）上替代扫码登录的方式。
+
+    在有桌面的机器上登录一次拿到 cookies.json，把**文件内容**POST 到这里，
+    服务端会写入该用户自己的工作目录，并在实例运行中时自动重启使其生效。
+    """
+    import asyncio
+
+    return await asyncio.to_thread(xhs_manager.import_cookies,
+                                   current_user["user_id"], req.cookies)
 
 
 @router.post("/login")

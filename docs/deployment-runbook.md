@@ -268,7 +268,8 @@ sudo -u travelagent git checkout v1.1.0
 | 刷新 `/guide` 404 | Nginx 少了 `try_files $uri $uri/ /index.html` |
 | 登录后立刻掉线 | `JWT_SECRET_KEY` 被改过或不同实例不一致（多副本）；确认单副本 + `.env` 一致 |
 | 分析进度「任务不存在」 | 起了多 worker/多副本 → 恢复单 worker，见 `docs/deployment-audit.md` |
-| 攻略生成报「未搜索到有效帖子」 | 小红书 MCP 未就绪：`XHS_MULTI_USER=false` 时需在别的机器跑 MCP 并配 `XHS_MCP_URL` |
+| 攻略生成报「未搜索到有效帖子」 | 小红书 MCP 未就绪：`XHS_MULTI_USER=false` 时需在别的机器跑 MCP 并配 `XHS_MCP_URL`；多用户模式见 `docs/xhs-multi-user.md` |
+| 日志 `Permission denied: .../xiaohongshu-mcp-windows-amd64.exe` | 把 **Windows 版**文件放到 Linux 服务器上了（PE 文件无法执行）→ 换 `xiaohongshu-mcp-linux-amd64` 并 `chmod +x`，或用「导入 cookies.json」 |
 | 日志服务打不开 | 只监听 127.0.0.1 属正常 → 用 SSH 隧道；或 `.env` 里设 `LOG_VIEWER_HOST=0.0.0.0` 并只放行内网 |
 | 内存吃紧 | ES 最占内存：`ES_JAVA_OPTS=-Xms512m -Xmx1g`；或把 ES 换成托管服务 |
 | 端口 8088 被公网扫到 | 说明安全组放行了它：关掉，只留 80/443 |

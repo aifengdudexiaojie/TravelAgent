@@ -43,6 +43,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -53,10 +54,113 @@ logger = logging.getLogger("services.xhs_manager")
 
 ROOT = Path(__file__).resolve().parent.parent
 MCP_DIR = ROOT / "xiaohongshumcp"                 # ⚠️ 目录名没有连字符
-MCP_EXE = MCP_DIR / "xiaohongshu-mcp-windows-amd64.exe"
-LOGIN_EXE = MCP_DIR / "xiaohongshu-login-windows-amd64.exe"
 USERS_DIR = MCP_DIR / "users"
 LOG_DIR = ROOT / "logs"
+
+# 官方 releases 的命名约定：xiaohongshu-mcp-<os>-<arch>[.exe]
+# ⚠️ 不要在代码里写死 Windows 文件名：云端 Linux 服务器跑不了 PE 文件（会报
+#    Permission denied / Exec format error），必须按当前平台挑对应构建。
+_EXE_CANDIDATES = {
+    "mcp": {
+        "win32": ["xiaohongshu-mcp-windows-amd64.exe", "xiaohongshu-mcp.exe"],
+        "linux": ["xiaohongshu-mcp-linux-amd64", "xiaohongshu-mcp-linux-arm64", "xiaohongshu-mcp"],
+        "darwin": ["xiaohongshu-mcp-darwin-arm64", "xiaohongshu-mcp-darwin-amd64", "xiaohongshu-mcp"],
+    },
+    "login": {
+        "win32": ["xiaohongshu-login-windows-amd64.exe", "xiaohongshu-login.exe"],
+        "linux": ["xiaohongshu-login-linux-amd64", "xiaohongshu-login-linux-arm64", "xiaohongshu-login"],
+        "darwin": ["xiaohongshu-login-darwin-arm64", "xiaohongshu-login-darwin-amd64", "xiaohongshu-login"],
+    },
+}
+# 允许用环境变量指定可执行文件（自编译/自定义路径）
+_EXE_ENV = {"mcp": "XHS_MCP_EXE", "login": "XHS_LOGIN_EXE"}
+_DOWNLOAD_HINT = "https://github.com/xpzouying/xiaohongshu-mcp/releases"
+COOKIE_MAX_BYTES = 2 * 1024 * 1024          # cookies.json 上限 2MB
+
+
+def _platform_key() -> str:
+    if sys.platform.startswith("win"):
+        return "win32"
+    if sys.platform.startswith("darwin"):
+        return "darwin"
+    return "linux"
+
+
+PLATFORM = _platform_key()
+
+
+def _is_windows_pe(path: Path) -> bool:
+    """看文件头是不是 Windows PE（MZ）——用来给出"你放错平台了"的明确提示。"""
+    try:
+        with path.open("rb") as fh:
+            return fh.read(2) == b"MZ"
+    except OSError:
+        return False
+
+
+def resolve_exe(kind: str = "mcp") -> tuple[Optional[Path], str]:
+    """按当前平台解析可执行文件。返回 (path, error_message)；成功时 error 为空串。
+
+    会顺带做两件容易被忽略的事：
+      · POSIX 下缺可执行位时自动 chmod +x（从 Windows 拷过去的文件通常没有 x 位）；
+      · 如果找到的是 Windows PE 却在 Linux/macOS 上跑，直接给出"下载 Linux 版"的明确指引，
+        而不是丢一个 "Permission denied" 让人猜。
+    """
+    assert kind in _EXE_CANDIDATES, kind
+
+    explicit = os.getenv(_EXE_ENV[kind], "").strip()
+    if explicit:
+        path = Path(explicit)
+        if not path.is_file():
+            return None, f"{_EXE_ENV[kind]} 指向的文件不存在：{path}"
+        ok, err = _check_runnable(path, kind)
+        return (path, "") if ok else (None, err)
+
+    names = _EXE_CANDIDATES[kind][PLATFORM]
+    existing = [MCP_DIR / n for n in names if (MCP_DIR / n).is_file()]
+    if not existing:
+        # 常见误操作：把 Windows 版文件拷到 Linux 服务器上 —— 单独点出来
+        other = [p for p in MCP_DIR.glob(f"xiaohongshu-{kind}-*") if p.is_file()]
+        hint = ""
+        if other and PLATFORM != "win32":
+            names_in_dir = "、".join(p.name for p in other[:3])
+            hint = (f"\n  ⚠️ 目录里检测到这些文件：{names_in_dir}\n"
+                    f"     但它们不是 {PLATFORM} 平台的可执行文件（Windows 的 .exe 在 Linux 上无法运行）。")
+        return None, (
+            f"未找到 {kind} 可执行文件（当前平台：{PLATFORM}）。\n"
+            f"  已查找：{MCP_DIR}/{{{', '.join(names)}}}{hint}\n"
+            f"  请到 {_DOWNLOAD_HINT} 下载对应平台的文件并放到 {MCP_DIR}/"
+        )
+
+    for path in existing:
+        ok, err = _check_runnable(path, kind)
+        if ok:
+            return path, ""
+    # 找到文件但不可用：把原因带出去
+    path = existing[0]
+    _, err = _check_runnable(path, kind)
+    return None, err
+
+
+def _check_runnable(path: Path, kind: str) -> tuple[bool, str]:
+    if PLATFORM == "win32":
+        return True, ""
+    if _is_windows_pe(path):
+        return False, (
+            f"{path.name} 是 **Windows** 可执行文件，当前服务器是 {PLATFORM}，无法运行。\n"
+            f"  请在服务器上改用对应平台的构建，例如 linux-amd64：\n"
+            f"    wget -P {MCP_DIR} {_DOWNLOAD_HINT.replace('/releases', '')}/releases/latest/download/xiaohongshu-{kind}-linux-amd64\n"
+            f"    chmod +x {MCP_DIR}/xiaohongshu-{kind}-linux-amd64\n"
+            f"  或改用「导入 cookies.json」的方式（见 docs/xhs-multi-user.md 第五节）"
+        )
+    # 缺可执行位 → 自动补上（从 Windows 复制过来的文件常见）
+    if not os.access(path, os.X_OK):
+        try:
+            path.chmod(path.stat().st_mode | 0o755)
+            logger.info("已为 %s 补上可执行权限", path)
+        except OSError as exc:
+            return False, f"{path.name} 没有可执行权限，且自动 chmod 失败：{exc}\n  请手动执行：chmod +x {path}"
+    return True, ""
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -178,10 +282,15 @@ def mcp_url_for(user_id: Optional[str], auto_start: bool = True) -> str:
 # ================================================================
 # 启停
 # ================================================================
+def _mcp_exe_path() -> Optional[Path]:
+    """当前平台下可用的 MCP 可执行文件（没有则 None）。"""
+    return resolve_exe("mcp")[0]
+
+
 def _exe_available() -> tuple[bool, str]:
-    if not MCP_EXE.exists():
-        return False, f"未找到 MCP 可执行文件：{MCP_EXE}（请从 xiaohongshu-mcp releases 下载后放到 xiaohongshumcp/）"
-    return True, ""
+    """MCP 主程序是否可用（按当前平台解析；错误信息可直接展示给用户）。"""
+    path, err = resolve_exe("mcp")
+    return (path is not None), err
 
 
 def _http_reachable(url: str, timeout: float = 2.0) -> bool:
@@ -195,8 +304,9 @@ def _http_reachable(url: str, timeout: float = 2.0) -> bool:
 
 def start_mcp(user_id: str) -> Dict[str, Any]:
     """启动（或复用）用户自己的 MCP 实例。幂等。"""
-    ok, err = _exe_available()
-    if not ok:
+    mcp_exe, err = resolve_exe("mcp")
+    if mcp_exe is None:
+        logger.error("小红书 MCP 不可用：%s", err)
         return {"ok": False, "url": DEFAULT_URL, "message": err}
 
     if not MULTI_USER:
@@ -225,7 +335,7 @@ def start_mcp(user_id: str) -> Dict[str, Any]:
         log_path = LOG_DIR / f"xhs-mcp-{_safe_name(user_id)}.log"
         LOG_DIR.mkdir(exist_ok=True)
 
-        cmd = [str(MCP_EXE), f"-port=:{port}", f"-headless={'true' if HEADLESS else 'false'}"]
+        cmd = [str(mcp_exe), f"-port=:{port}", f"-headless={'true' if HEADLESS else 'false'}"]
         logger.info("启动小红书 MCP：user=%s port=%d cwd=%s", user_id, port, workdir)
         try:
             with open(log_path, "a", encoding="utf-8") as log_fp:
@@ -305,8 +415,10 @@ def start_login(user_id: str) -> Dict[str, Any]:
 
     登录工具是 GUI 程序：会弹出浏览器窗口，用户扫码完成后窗口自动关闭并落盘 cookies。
     """
-    if not LOGIN_EXE.exists():
-        return {"ok": False, "message": f"未找到登录程序：{LOGIN_EXE}"}
+    login_exe, err = resolve_exe("login")
+    if login_exe is None:
+        logger.error("小红书登录程序不可用：%s", err)
+        return {"ok": False, "message": err}
 
     workdir = workdir_for(user_id)
     log_path = LOG_DIR / f"xhs-login-{_safe_name(user_id)}.log"
@@ -315,7 +427,7 @@ def start_login(user_id: str) -> Dict[str, Any]:
         with open(log_path, "a", encoding="utf-8") as log_fp:
             log_fp.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} login =====\n")
             log_fp.flush()
-            subprocess.Popen([str(LOGIN_EXE)], cwd=str(workdir), stdout=log_fp, stderr=log_fp)
+            subprocess.Popen([str(login_exe)], cwd=str(workdir), stdout=log_fp, stderr=log_fp)
     except Exception as exc:
         logger.exception("拉起登录程序失败: %s", exc)
         return {"ok": False, "message": f"拉起登录程序失败：{exc}"}
@@ -330,11 +442,67 @@ def start_login(user_id: str) -> Dict[str, Any]:
 
 
 def cookie_present(user_id: str) -> bool:
+    """该用户目录里是否有可用的 cookies.json。
+
+    阈值只用来排除"空文件/占位文件"，与 import_cookies() 的最小长度保持一致；
+    真实 cookies.json 通常有几 KB。
+    """
     path = workdir_for(user_id) / "cookies.json"
     try:
-        return path.exists() and path.stat().st_size > 100
+        return path.exists() and path.stat().st_size >= 10
     except OSError:
         return False
+
+
+def import_cookies(user_id: str, raw: Any) -> Dict[str, Any]:
+    """导入 cookies.json —— 无桌面服务器上替代"扫码登录"的落地方式。
+
+    为什么需要它：`xiaohongshu-login-*` 是**桌面程序**（要弹浏览器扫码），
+    云服务器（尤其没有 X/桌面的 Linux）根本弹不出来。所以支持把在**本机**
+    登录好的 `cookies.json` 传上来，直接放进该用户自己的工作目录。
+
+    校验：非空、≤2MB、合法 JSON（对象或数组）。
+    """
+    data = raw.encode("utf-8") if isinstance(raw, str) else (raw or b"")
+    # 校验顺序：空 → 过大 → 能否解析 → 内容像不像 cookies.json → 是否过短
+    # （先解析再判长度，这样 "{}" 这类会得到"内容不像"这种更有用的提示）
+    if not data:
+        return {"ok": False, "message": "内容为空，请上传完整的 cookies.json"}
+    if len(data) > COOKIE_MAX_BYTES:
+        return {"ok": False, "message": f"文件过大（上限 {COOKIE_MAX_BYTES // 1024 // 1024} MB）"}
+    try:
+        parsed = json.loads(data.decode("utf-8", errors="ignore"))
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "message": f"不是合法的 JSON：{exc}"}
+    if not isinstance(parsed, (dict, list)) or not parsed:
+        return {"ok": False, "message": "内容不像 cookies.json（应为非空的 JSON 对象或数组）"}
+    if len(data) < 10:
+        return {"ok": False, "message": "内容过短，请上传完整的 cookies.json"}
+
+    workdir = workdir_for(user_id)
+    path = workdir / "cookies.json"
+    try:
+        path.write_bytes(data)
+        if os.name != "nt":
+            path.chmod(0o600)             # 凭据文件，权限收紧
+    except OSError as exc:
+        return {"ok": False, "message": f"写入失败：{exc}"}
+
+    # 实例正在跑时重启一次，让新的 cookies 生效
+    restarted = False
+    inst = instance_for(user_id, touch=False)
+    if inst is not None and inst.alive():
+        stop_mcp(user_id)
+        started = start_mcp(user_id)
+        restarted = bool(started.get("ok"))
+    logger.info("用户 %s 导入了 cookies.json（%d 字节，重启实例=%s）", user_id, len(data), restarted)
+    return {
+        "ok": True,
+        "bytes": len(data),
+        "path": str(path),
+        "restarted": restarted,
+        "message": "cookies.json 已导入" + ("，实例已重启以生效" if restarted else "；启动实例后即可使用"),
+    }
 
 
 def login_status(user_id: str) -> Dict[str, Any]:
@@ -360,11 +528,15 @@ def login_status(user_id: str) -> Dict[str, Any]:
     }
 
     if MULTI_USER and not running:
-        info["message"] = (
-            "尚未启动小红书实例：点「登录小红书」会自动启动并弹出扫码窗口"
-            if not info["has_cookie"] else
-            "检测到已保存的登录态，点「登录小红书」即可启动实例继续使用"
-        )
+        # 服务器上没有可用的 MCP 程序时，直接把原因说清楚（而不是让用户猜）
+        exe_path, exe_err = resolve_exe("mcp")
+        if exe_path is None:
+            info["message"] = f"服务器上无法使用小红书服务：{exe_err}"
+            info["exe_error"] = exe_err
+        elif not info["has_cookie"]:
+            info["message"] = "尚未启动小红书实例：点「登录小红书」会自动启动并弹出扫码窗口"
+        else:
+            info["message"] = "检测到已保存的登录态，点「登录小红书」即可启动实例继续使用"
         return info
 
     if inst is not None and not inst.alive():
@@ -403,8 +575,11 @@ def status_for(user_id: str) -> Dict[str, Any]:
         "multi_user": MULTI_USER,
         "max_instances": MAX_INSTANCES,
         "running_instances": len([i for i in _instances.values() if i.alive()]),
-        "exe_available": MCP_EXE.exists(),
-        "login_exe_available": LOGIN_EXE.exists(),
+        "platform": PLATFORM,
+        "exe_available": _mcp_exe_path() is not None,
+        "login_exe_available": resolve_exe("login")[0] is not None,
+        "exe_error": resolve_exe("mcp")[1],
+        "login_exe_error": resolve_exe("login")[1],
         "workdir": str(workdir_for(user_id)),
     })
     if inst is not None:

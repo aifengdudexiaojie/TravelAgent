@@ -335,6 +335,10 @@ export const xhsApi = {
   login(): Promise<AxiosResponse> {
     return http.post('/xhs/login')
   },
+  /** 导入 cookies.json（无桌面服务器上替代扫码登录） */
+  importCookies(cookies: string): Promise<AxiosResponse> {
+    return http.post('/xhs/cookies', { cookies })
+  },
   startMcp(): Promise<AxiosResponse> {
     return http.post('/xhs/mcp/start')
   },

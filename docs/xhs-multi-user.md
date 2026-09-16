@@ -72,8 +72,9 @@ xiaohongshumcp/
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/xhs/status` | 当前用户状态（只读）：`logged_in` / `mcp_running` / `port` / `workdir` / `message` |
-| POST | `/api/xhs/login` | 启动该用户实例 + 拉起登录程序（弹窗扫码） |
+| GET | `/api/xhs/status` | 当前用户状态（只读）：`logged_in` / `mcp_running` / `port` / `workdir` / `platform` / `exe_available` / `exe_error` / `message` |
+| POST | `/api/xhs/login` | 启动该用户实例 + 拉起登录程序（**桌面环境**弹窗扫码） |
+| POST | `/api/xhs/cookies` | 导入 cookies.json（**无桌面服务器**的登录方式），body：`{"cookies": "<文件内容>"}` |
 | POST | `/api/xhs/mcp/start` | 只启动实例（不起登录窗口） |
 | POST | `/api/xhs/mcp/stop` | 停止实例，释放内存/端口 |
 | POST | `/api/xhs/logout` | 停止实例（cookies 保留在本人目录，重登会覆盖） |
@@ -107,12 +108,13 @@ Windows exe + 弹窗扫码的方案**只适用于本机/内网 Windows 服务器
 ```
 
 要点：
-1. 用官方 **Linux 构建**（`xiaohongshu-mcp-linux-amd64`）替换 Windows exe（`xhs_manager.MCP_EXE` 改路径即可）。
-2. 无桌面 → 必须给容器一个虚拟显示：`Xvfb :99 & DISPLAY=:99`，`XHS_HEADLESS=false`。
-3. **扫码要改成"把二维码给前端"**：登录工具在无头环境下会把二维码保存/输出到工作目录，
-   后端读出来转成 base64 由前端展示（前端加一个"二维码弹窗"，替代"弹浏览器"）。
-   当前实现只覆盖 Windows 弹窗路径，云端需要补这一步。
-4. 每用户容器按需创建、空闲销毁；cookies 存在该用户的持久卷里（不要放在镜像层）。
+1. 用官方 **Linux 构建**（`xiaohongshu-mcp-linux-amd64`）替换 Windows exe —— 代码已按平台自动挑选
+   （`services/xhs_manager.resolve_exe()`），放对文件名即可，无需改代码。
+2. **服务器上不能放 Windows 的 `.exe`**：Linux 上会报 `Permission denied` 或 `Exec format error`。
+   现在这种情况会在状态接口与前端直接给出「这是 Windows 可执行文件，当前服务器是 linux」的明确提示。
+3. 登录：服务器没有桌面，扫码窗口弹不出来 → 用 **「导入 cookies.json」**（第六节），
+   或在服务器上装 Xvfb + VNC 后跑 Linux 版登录工具（不推荐，麻烦）。
+4. 每用户实例按需创建、空闲销毁；cookies 存在该用户的工作目录里，不要放进镜像。
 5. 容量估算（按每实例 1 个 Chromium）：
 
    | 规模 | 常驻实例 | 内存 | 建议 |
@@ -121,13 +123,74 @@ Windows exe + 弹窗扫码的方案**只适用于本机/内网 Windows 服务器
    | ~10 人 | 3（上限） | 2–3 GB | 8 GB 机型 + 排队提示 |
    | ~50 人 | 需要队列 | 8 GB+ | 实例池 + 任务队列（生成攻略是分钟级任务，适合排队） |
 
+### Linux 服务器落地步骤（照着做）
+
+```bash
+# ① 删掉误传上来的 Windows 版文件（在 Linux 上不可执行，且占 25MB）
+cd /opt/travelagent/xiaohongshumcp
+rm -f xiaohongshu-mcp-windows-amd64.exe xiaohongshu-login-windows-amd64.exe
+
+# ② 下载 Linux 版（文件名形如 xiaohongshu-mcp-linux-amd64，以 releases 页面为准）
+wget https://github.com/xpzouying/xiaohongshu-mcp/releases/latest/download/xiaohongshu-mcp-linux-amd64
+chmod +x xiaohongshu-mcp-linux-amd64        # 代码也会自动补，但建议手动确认
+ls -l xiaohongshumcp/                        # 确认有可执行文件
+
+# ③ 浏览器依赖：rod 需要 Chrome/Chromium
+sudo apt-get install -y chromium-browser || {
+  wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+  sudo apt install -y ./google-chrome-stable_current_amd64.deb
+}
+
+# ④ 重启后端（会按平台重新解析可执行文件）
+sudo systemctl restart travel-agent-api
+
+# ⑤ 验证：状态里应能看到实例被拉起
+curl -s -H "Authorization: Bearer <你的token>" http://127.0.0.1:8088/api/xhs/status | python3 -m json.tool
+```
+
+然后在浏览器里点「登录小红书」→ 服务器会拉起 Linux 版实例；**登录态用下面的 cookies 导入完成**。
+
+## 六、无桌面服务器的登录方式：导入 cookies.json
+
+云服务器弹不出扫码窗口，所以提供了「导入 cookies.json」：
+
+1. 在**有桌面的机器**上登录一次小红书（Windows 上就是点「登录小红书」扫码，
+   成功后 `xiaohongshumcp/cookies.json` 或 `xiaohongshumcp/users/<user_id>/cookies.json` 会有登录态）；
+2. 打开 `http://<你的站点>/#/guide` → 点「📄 导入 cookies.json」→ 选中该文件；
+3. 后端把它写进**你自己的**工作目录（`xiaohongshumcp/users/<user_id>/cookies.json`，权限 600），
+   如果实例在跑会自动重启使其生效；
+4. 状态灯变绿（显示小红书用户名）后即可生成攻略。
+
+命令行等价操作（把文件内容 POST 上去）：
+
+```bash
+curl -s -X POST http://127.0.0.1:8088/api/xhs/cookies \
+  -H "Authorization: Bearer <你的token>" -H "Content-Type: application/json" \
+  -d "$(python3 -c 'import json,sys;print(json.dumps({"cookies":open("cookies.json",encoding="utf-8").read()}))')"
+```
+
+校验：非空、≤2MB、合法 JSON（对象或数组），否则会返回明确原因。cookies 属于个人凭据：
+只存在该用户自己的目录、不要跨用户复制、不要提交到仓库。
+
 ### 方案 B：不部署 MCP，改成"自带数据源"
+
 
 如果不想在云上跑浏览器：
 * 只在**本地**用 MCP 抓取，抓到的笔记入库（PG/ES）后，云端只做 RAG 与分析（本项目的 RAG 已就绪）；
 * 或者改用官方/第三方 API（需自行评估合规与配额）。
 
-## 六、合规与风控提醒
+## 七、排错速查
+
+| 现象 | 原因 | 处理 |
+|------|------|------|
+| 日志 `Permission denied: '.../xiaohongshu-mcp-windows-amd64.exe'` | 把 **Windows 版**文件放到 Linux 服务器上了（PE 文件在 Linux 上无法执行） | 按第五节换 Linux 构建；或用「导入 cookies.json」 |
+| `Exec format error` | 同上（有的内核先报权限再报格式） | 同上 |
+| 状态里 `exe_error` 提示"未找到 linux 可执行文件" | 只放了 Windows 版 / 文件名不对 | 确认文件名为 `xiaohongshu-mcp-linux-amd64` 且 `chmod +x` |
+| 实例起得来但搜索结果为空 | 未登录 / 浏览器依赖缺失 | 导入 cookies.json；`apt install chromium` |
+| 状态一直"未登录"但已导入 cookies | 实例没跑起来，或 cookies 过期 | 点「停止实例」再点「登录小红书」重启；重新导入最新 cookies |
+| 多人同时用超时 | 实例数达上限（`XHS_MAX_INSTANCES`，默认 3） | 调大上限（注意内存）或让用户错峰 |
+
+## 八、合规与风控提醒
 
 * 抓取小红书内容请遵守平台条款与 robots 约定，控制频率；本项目默认每个关键词只取 5 条、串行分析。
 * 用户 cookies 属于个人凭据：只存在其本人目录、不要跨用户复制、不要进版本库（`.gitignore` 已排除
