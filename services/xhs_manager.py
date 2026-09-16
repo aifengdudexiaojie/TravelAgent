@@ -76,6 +76,7 @@ _EXE_CANDIDATES = {
 _EXE_ENV = {"mcp": "XHS_MCP_EXE", "login": "XHS_LOGIN_EXE"}
 _DOWNLOAD_HINT = "https://github.com/xpzouying/xiaohongshu-mcp/releases"
 COOKIE_MAX_BYTES = 2 * 1024 * 1024          # cookies.json 上限 2MB
+COOKIE_MIN_BYTES = 500                      # 小于此值视为"占位文件"（MCP 启动会写 ~99B 占位）
 
 
 def _platform_key() -> str:
@@ -441,15 +442,79 @@ def start_login(user_id: str) -> Dict[str, Any]:
     }
 
 
-def cookie_present(user_id: str) -> bool:
-    """该用户目录里是否有可用的 cookies.json。
+def login_qrcode(user_id: str) -> Dict[str, Any]:
+    """取登录二维码（**云上用户登录的正解**，无需桌面/弹窗，也不用碰 cookies 文件）。
 
-    阈值只用来排除"空文件/占位文件"，与 import_cookies() 的最小长度保持一致；
-    真实 cookies.json 通常有几 KB。
+    流程：确保该用户实例在跑 → 调 MCP 的 `get_login_qrcode` 工具 → 返回 Base64 图片，
+    前端直接 <img src="data:image/png;base64,..."> 展示，用户用小红书 App 扫码即可。
+
+    返回 {"ok", "image_base64", "mime", "text", "expires_at", "mcp_url", "message"}
+    """
+    from xiaohongshu_mcp_client import get_login_qrcode as _qr
+
+    started = start_mcp(user_id)          # 显式登录动作，允许按需拉起实例
+    url = started.get("url") or DEFAULT_URL
+    if not started.get("ok") and MULTI_USER:
+        return {"ok": False, "mcp_url": url, "message": started.get("message") or "实例不可用"}
+
+    try:
+        qr = _qr(url)
+    except Exception as exc:
+        logger.warning("获取登录二维码失败 user=%s: %s", user_id, exc)
+        return {"ok": False, "mcp_url": url, "message": f"获取二维码失败：{exc}"}
+
+    if not qr.get("image_base64"):
+        return {
+            "ok": False, "mcp_url": url, "text": qr.get("text", ""),
+            "message": qr.get("text") or "未取到二维码（可能已登录；如需换号请先退出登录）",
+        }
+    return {
+        "ok": True,
+        "mcp_url": url,
+        "mime": qr.get("mime", "image/png"),
+        "image_base64": qr["image_base64"],
+        "text": qr.get("text", ""),
+        "expires_at": qr.get("expires_at"),
+        "message": qr.get("text") or "请用小红书 App 扫码登录",
+    }
+
+
+def clear_login(user_id: str) -> Dict[str, Any]:
+    """退出登录：停实例 → 让 MCP 删除 cookies → 清掉本地 cookies.json（用于换号/重扫）。"""
+    from xiaohongshu_mcp_client import _batch_call
+
+    inst = instance_for(user_id, touch=False)
+    if inst is not None and inst.alive():
+        try:
+            _batch_call("tools/call", {"name": "delete_cookies"},
+                        base_url=inst.url, max_retries=0)
+        except Exception as exc:
+            logger.info("delete_cookies 调用失败（继续清理本地文件）: %s", exc)
+    stop_mcp(user_id)
+
+    path = workdir_for(user_id) / "cookies.json"
+    removed = False
+    try:
+        if path.exists():
+            path.unlink()
+            removed = True
+    except OSError as exc:
+        return {"ok": False, "message": f"删除 cookies.json 失败：{exc}"}
+    logger.info("用户 %s 已退出登录（删除 cookies=%s）", user_id, removed)
+    return {"ok": True, "removed": removed,
+            "message": "已退出登录，可重新扫码登录（或导入其他账号的 cookies.json）"}
+
+
+def cookie_present(user_id: str) -> bool:
+    """该用户目录里是否有**真实**的登录态。
+
+    ⚠️ 注意：MCP 启动时会自己写一个约 99 字节的占位 cookies.json，
+    所以不能用"文件存在"或很小的阈值判断 —— 真实登录态通常有几 KB。
+    这里用 500 字节作为分界（占位 99B < 500 < 真实 ~7KB）。
     """
     path = workdir_for(user_id) / "cookies.json"
     try:
-        return path.exists() and path.stat().st_size >= 10
+        return path.exists() and path.stat().st_size >= COOKIE_MIN_BYTES
     except OSError:
         return False
 

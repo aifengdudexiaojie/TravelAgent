@@ -331,7 +331,15 @@ export const xhsApi = {
   status(): Promise<AxiosResponse> {
     return http.get('/xhs/status')
   },
-  /** 拉起登录程序（扫码登录自己的小红书），并确保该用户的 MCP 实例已启动 */
+  /** 取登录二维码（Base64 PNG）：前端直接展示，用户手机扫码即可 */
+  qrcode(): Promise<AxiosResponse> {
+    return http.get('/xhs/qrcode')
+  },
+  /** 退出登录（换号前调用）：删掉该用户的 cookies 并停实例 */
+  clear(): Promise<AxiosResponse> {
+    return http.post('/xhs/clear')
+  },
+  /** 桌面环境备用：拉起登录程序弹浏览器扫码 */
   login(): Promise<AxiosResponse> {
     return http.post('/xhs/login')
   },

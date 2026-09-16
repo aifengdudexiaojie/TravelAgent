@@ -11,19 +11,40 @@
 """
 
 import os
+import pathlib
+import shutil
 import unittest
 from unittest.mock import patch
 
 from services import xhs_manager as xm
 
 
-class WorkdirIsolationTest(unittest.TestCase):
+class _UsersDirCleanup:
+    """测试会调用 workdir_for() 造出用户目录，跑完自动删掉本次新增的，避免污染真实数据。"""
+
     def setUp(self):
+        super().setUp()
+        self._users_before = ({d.name for d in xm.USERS_DIR.iterdir()}
+                              if xm.USERS_DIR.exists() else set())
+
+    def tearDown(self):
+        try:
+            if xm.USERS_DIR.exists():
+                for d in xm.USERS_DIR.iterdir():
+                    if d.name not in self._users_before:
+                        shutil.rmtree(d, ignore_errors=True)
+        finally:
+            super().tearDown()
+
+class WorkdirIsolationTest(_UsersDirCleanup, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
         self._multi = xm.MULTI_USER
         xm.MULTI_USER = True
 
     def tearDown(self):
         xm.MULTI_USER = self._multi
+        super().tearDown()
 
     def test_each_user_gets_own_workdir(self):
         a = xm.workdir_for("user-a")
@@ -47,8 +68,9 @@ class WorkdirIsolationTest(unittest.TestCase):
         self.assertEqual(xm.mcp_url_for("user-a"), xm.DEFAULT_URL)
 
 
-class InstanceRegistryTest(unittest.TestCase):
+class InstanceRegistryTest(_UsersDirCleanup, unittest.TestCase):
     def setUp(self):
+        super().setUp()
         self._multi = xm.MULTI_USER
         xm.MULTI_USER = True
         xm._instances.clear()
@@ -58,6 +80,7 @@ class InstanceRegistryTest(unittest.TestCase):
         xm._instances.clear()
         xm._ports_in_use.clear()
         xm.MULTI_USER = self._multi
+        super().tearDown()
 
     def test_port_allocation_is_unique(self):
         ports = {xm._allocate_port() for _ in range(5)}
@@ -208,13 +231,23 @@ class ImportCookiesTest(unittest.TestCase):
             shutil.rmtree(wd, ignore_errors=True)
 
     def test_writes_cookie_file(self):
-        payload = '{"cookies":[{"name":"web_session","value":"abc"}]}'
+        # 用接近真实的体积（真实 cookies.json 约 7KB；MCP 的占位文件只有 ~99B）
+        payload = '{"cookies":[' + ",".join(
+            '{"name":"c%d","value":"%s"}' % (i, "x" * 40) for i in range(12)) + ']}'
         result = xm.import_cookies(self.user, payload)
         self.assertTrue(result["ok"], result)
         path = xm.workdir_for(self.user) / "cookies.json"
         self.assertTrue(path.exists())
         self.assertEqual(path.read_text(encoding="utf-8"), payload)
         self.assertTrue(xm.cookie_present(self.user))
+
+    def test_placeholder_cookie_is_not_treated_as_logged_in(self):
+        """MCP 启动会写一个 ~99B 占位 cookies.json —— 不能当成已登录。"""
+        placeholder = '{"cookies":[],"origins":[],"saved_at":"placeholder"}'
+        self.assertLess(len(placeholder), xm.COOKIE_MIN_BYTES)
+        path = xm.workdir_for(self.user) / "cookies.json"
+        path.write_text(placeholder, encoding="utf-8")
+        self.assertFalse(xm.cookie_present(self.user))
 
     def test_rejects_empty_and_malformed(self):
         for bad, hint in (("", "为空"), ("not json at all", "JSON"),

@@ -106,6 +106,91 @@ def _batch_call(method: str, params: dict | None = None,
     return raw
 
 
+def _batch_call_content(method: str, params: dict | None = None,
+                        base_url: str = MCP_URL,
+                        max_retries: int = 2) -> list[dict]:
+    """同 `_batch_call`，但返回 MCP 的 **原始 content 列表**（text / image 都在里面）。
+
+    为什么需要它：登录二维码不是文本，而是 MCP 返回的
+    `{"type": "image", "mimeType": "image/png", "data": "<base64>"}` 片段，
+    只取 text 会丢掉图片。见 `get_login_qrcode()`。
+    """
+    payload = [
+        {"jsonrpc": "2.0", "id": "1", "method": "initialize",
+         "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                    "clientInfo": {"name": "xiaohongshu-client", "version": "1.0"}}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": "2", "method": method, "params": params or {}},
+    ]
+
+    import time as _time
+    for attempt in range(max_retries + 1):
+        try:
+            resp = httpx.post(
+                base_url, json=payload,
+                headers={"Accept": "application/json, text/event-stream"},
+                timeout=120,
+            )
+            resp.raise_for_status()
+            responses = resp.json()
+            break
+        except httpx.ConnectError as e:
+            raise ConnectionError(
+                f"无法连接到 xiaohongshu-mcp 服务 ({base_url})"
+            ) from e
+        except httpx.TimeoutException as e:
+            if attempt < max_retries:
+                _time.sleep(2)
+                continue
+            raise TimeoutError(f"请求超时（重试 {max_retries} 次后仍失败）") from e
+        except httpx.HTTPError:
+            if attempt < max_retries:
+                _time.sleep(1)
+                continue
+            raise
+
+    target = responses[-1] if len(responses) > 1 else responses[0]
+    if "error" in target:
+        err = target["error"]
+        raise RuntimeError(f"MCP 错误: {err.get('message', str(err))}")
+    return list(target.get("result", {}).get("content", []))
+
+
+def get_login_qrcode(base_url: str = MCP_URL) -> dict:
+    """获取登录二维码。
+
+    返回：{"text": 提示语, "image_base64": "...", "mime": "image/png", "expires_at": ISO|None}
+
+    这是"云服务器上让用户自己登录"的正解：二维码由 MCP 生成，后端转成 data URL 给前端展示，
+    用户用手机扫一下即可 —— 不需要桌面环境、不需要弹浏览器、也不需要用户碰 cookies 文件。
+    """
+    import re
+    from datetime import datetime, timedelta, timezone
+
+    contents = _batch_call_content("tools/call", {"name": "get_login_qrcode"},
+                                   base_url=base_url, max_retries=0)
+    out: dict = {"text": "", "image_base64": "", "mime": "image/png", "expires_at": None}
+    for c in contents:
+        ctype = c.get("type")
+        if ctype == "text":
+            out["text"] = (out["text"] + "\n" + (c.get("text") or "")).strip()
+        elif ctype == "image":
+            out["image_base64"] = c.get("data") or ""
+            out["mime"] = c.get("mimeType") or "image/png"
+
+    # 提示语形如「请用小红书 App 在 2026-09-16 15:20:45 前扫码登录 👇」，把过期时间解析出来给前端倒计时
+    m = re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", out["text"] or "")
+    if m:
+        try:
+            dt_local = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+            out["expires_at"] = dt_local.replace(tzinfo=timezone(timedelta(hours=8))).isoformat()
+        except ValueError:
+            pass
+    if not out["image_base64"]:
+        out["message"] = out["text"] or "未取到二维码"
+    return out
+
+
 # ================================================================
 # 工具函数
 # ================================================================

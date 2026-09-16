@@ -1,14 +1,16 @@
-"""小红书 MCP 路由：登录 / 状态 / 实例启停 / cookies 导入
+"""小红书 MCP 路由：二维码登录 / 状态 / 实例启停 / cookies 导入
 ================================================================================
 
-前端「生成旅游攻略」页顶部会显示登录状态，并据此决定能否开始规划：
+前端「生成旅游攻略」页顶部显示登录状态并据此决定能否开始规划：
 
     GET  /api/xhs/status          当前用户状态（已登录？实例在跑？平台？为什么起不来？）
-    POST /api/xhs/login           拉起登录程序（**桌面环境**：弹窗扫码）
-    POST /api/xhs/cookies         导入 cookies.json（**无桌面服务器**上的登录方式）
+    GET  /api/xhs/qrcode          **取登录二维码（推荐，云上也用这个）** → 前端弹窗展示，手机扫码
+    POST /api/xhs/clear           退出登录（换号用；会删掉该用户的 cookies）
+    POST /api/xhs/cookies         导入 cookies.json（迁移已有登录态的高级选项）
+    POST /api/xhs/login           桌面环境备用：拉起登录程序弹浏览器扫码
     POST /api/xhs/mcp/start       启动该用户的 MCP 实例（登录前也会自动启动）
     POST /api/xhs/mcp/stop        停止该用户的 MCP 实例
-    POST /api/xhs/logout          停止实例（登录态由 cookies.json 保存，重登会覆盖）
+    POST /api/xhs/logout          停止实例（不删登录态）
 """
 
 import logging
@@ -35,6 +37,26 @@ async def xhs_status(current_user: dict = Depends(get_current_user)):
     import asyncio
 
     return await asyncio.to_thread(xhs_manager.status_for, current_user["user_id"])
+
+
+@router.get("/qrcode")
+async def xhs_qrcode(current_user: dict = Depends(get_current_user)):
+    """取登录二维码（Base64 PNG）。
+
+    用户侧的体验就是：点「登录小红书」→ 网页弹出二维码 → 手机扫码 → 状态自动变绿。
+    不需要桌面环境、不需要浏览器窗口，也不需要用户下载/上传任何文件。
+    """
+    import asyncio
+
+    return await asyncio.to_thread(xhs_manager.login_qrcode, current_user["user_id"])
+
+
+@router.post("/clear")
+async def xhs_clear(current_user: dict = Depends(get_current_user)):
+    """退出登录（换号/重新扫码前调用）：删该用户的 cookies 并停实例。"""
+    import asyncio
+
+    return await asyncio.to_thread(xhs_manager.clear_login, current_user["user_id"])
 
 
 @router.post("/cookies")

@@ -109,8 +109,10 @@ LOG_VIEWER_USER=admin
 LOG_VIEWER_PASSWORD=<你自己的口令>                 # 必改！默认值 logviewer 会告警
 LOG_VIEWER_MAX_LINES=3000
 
-# 小红书：Linux 云上没有 Windows exe，先关多用户实例（方案见 docs/xhs-multi-user.md）
-XHS_MULTI_USER=false
+# 小红书：放好 Linux x64 版二进制（xiaohongshu-mcp-linux-amd64）即可，
+# 用户在自己浏览器里扫二维码登录；首次启动会自动下载无头浏览器（~150MB）
+# 详见 docs/xhs-multi-user.md 第五节
+XHS_MULTI_USER=true
 XHS_MCP_URL=http://<跑 MCP 的机器>:18060/mcp
 ```
 
@@ -234,7 +236,7 @@ SSE 端点可达、日志服务无口令 401 / 带 `.env` 口令 200。
 手工再过一遍：
 
 1. 注册一个账号 → 登录 → 普通模式聊天有回复；
-2. 攻略页：未登录小红书时**输入框禁用**（应显示登录引导）；
+2. 攻略页：点「登录小红书」→ **网页弹出二维码，手机扫码后状态灯变绿**（未登录时输入框与「开始规划」禁用）；
 3. 「我的」保存一篇攻略 → 详情页能打开 → 评价 → 公开 → 匿名窗口访问「旅游分享」能看到；
 4. 另一个账号登录 → 在「我的」里**看不到**第 3 步的私有攻略，历史模式聊天也检索不到；
 5. 刷新页面时攻略进度不丢（切页/刷新会追平）。
@@ -268,8 +270,9 @@ sudo -u travelagent git checkout v1.1.0
 | 刷新 `/guide` 404 | Nginx 少了 `try_files $uri $uri/ /index.html` |
 | 登录后立刻掉线 | `JWT_SECRET_KEY` 被改过或不同实例不一致（多副本）；确认单副本 + `.env` 一致 |
 | 分析进度「任务不存在」 | 起了多 worker/多副本 → 恢复单 worker，见 `docs/deployment-audit.md` |
-| 攻略生成报「未搜索到有效帖子」 | 小红书 MCP 未就绪：`XHS_MULTI_USER=false` 时需在别的机器跑 MCP 并配 `XHS_MCP_URL`；多用户模式见 `docs/xhs-multi-user.md` |
-| 日志 `Permission denied: .../xiaohongshu-mcp-windows-amd64.exe` | 把 **Windows 版**文件放到 Linux 服务器上了（PE 文件无法执行）→ 换 `xiaohongshu-mcp-linux-amd64` 并 `chmod +x`，或用「导入 cookies.json」 |
+| 攻略生成报「未搜索到有效帖子」 | 小红书未登录或 MCP 未就绪：攻略页点「登录小红书」扫码；`XHS_MULTI_USER=false` 时需另配 `XHS_MCP_URL`。见 `docs/xhs-multi-user.md` |
+| 日志 `Permission denied: .../xiaohongshu-mcp-windows-amd64.exe` | 把 **Windows 版**文件放到 Linux 服务器上了（PE 文件无法执行）→ 换 `xiaohongshu-mcp-linux-amd64` 并 `chmod +x` |
+| 点登录后二维码出不来 | 首次启动 MCP 要下载无头浏览器（~150MB）会慢：看 `logs/xhs-mcp-<user_id>.log`；受限网络需自备 Chromium |
 | 日志服务打不开 | 只监听 127.0.0.1 属正常 → 用 SSH 隧道；或 `.env` 里设 `LOG_VIEWER_HOST=0.0.0.0` 并只放行内网 |
 | 内存吃紧 | ES 最占内存：`ES_JAVA_OPTS=-Xms512m -Xmx1g`；或把 ES 换成托管服务 |
 | 端口 8088 被公网扫到 | 说明安全组放行了它：关掉，只留 80/443 |
