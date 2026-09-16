@@ -54,6 +54,7 @@ TravelAgent/
 ├── run_backend.py           # 启动后端（控制台 + logs/backend.log 双写）
 ├── log_viewer.py            # 独立日志查看服务（单独端口 + .env 里的固定口令）
 ├── check_secrets.py         # 上传前密钥/凭据自查
+├── check_repo.py            # 推送前仓库完整性自查（防 .gitignore 误伤源码）
 ├── fix_guide_owner.py       # 存量攻略归属修复（默认 dry-run）
 ├── ingest_by_es_transfer.py # CLI：攻略入库
 ├── rag_query.py             # CLI：RAG 检索查询
@@ -232,6 +233,24 @@ docker compose up -d redis qdrant
 # 跑后端 + 独立日志服务
 docker compose --profile app up -d api log-viewer
 ```
+
+## 📤 推送到 GitHub（推送前必做两个自查）
+
+```bash
+python check_secrets.py     # ① 密钥/凭据：扫描 git 已跟踪文件，命中即非 0 退出
+python check_repo.py        # ② 仓库完整性：源码有没有被 .gitignore 误伤
+git add -A && git commit -m "..." && git push
+```
+
+**为什么要 ②**：`.gitignore` 里**没锚定到仓库根**的目录名规则会误伤嵌套的同名源码目录。
+真实踩过的坑：Python 打包产物规则 `lib/` 把 `vue/src/lib/` 整个忽略了，
+`vue/src/lib/api.ts` 从未进仓库 —— 本地 `npm run build` 正常，服务器 clone 下来直接
+一片 `Cannot find module '@/lib/api'`（TS2307）。所以：
+
+* 目录名类规则一律写成 `/xxx/`（锚定根目录），并写清注释；
+* 推送前跑 `python check_repo.py`（它会逐文件比对 `services/ controller/ vue/ …`，
+  列出没进仓库的源码并直接告诉你命中的是哪条规则）；
+* 服务器上拉完代码可以先确认一下：`git ls-files vue/src/lib`。
 
 ## 🔑 环境变量
 

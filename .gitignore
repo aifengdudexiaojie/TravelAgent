@@ -26,18 +26,25 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
-dist/
-develop-eggs/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
+
+# ⚠️ 下面这些是 Python 打包/构建产物目录，**必须用 / 前缀锚定到仓库根**！
+#    不加 / 的话会匹配任意层级的同名目录，从而误伤源码：
+#    踩过的坑：`lib/` 把 `vue/src/lib/api.ts` 一起忽略了 —— 本地构建正常，
+#    云端 clone 下来却报 "Cannot find module '@/lib/api'"。
+#    新增类似规则时请一律写成 `/xxx/`，并用 `python check_repo.py` 复查。
+/build/
+/dist/
+/develop-eggs/
+/downloads/
+/eggs/
+/.eggs/
+/lib/
+/lib64/
+/parts/
+/sdist/
+/var/
+/wheels/
+/data/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -46,8 +53,11 @@ pip-wheel-metadata/
 # 虚拟环境（本机是 .venv，173MB，绝不能提交）
 .venv/
 venv/
-env/
-ENV/
+/env/
+/ENV/
+
+# 前端构建产物（前端目录下另有 vue/.gitignore 兜底）
+vue/dist/
 
 # ================================================
 # 测试 / 类型检查 / 格式化缓存
