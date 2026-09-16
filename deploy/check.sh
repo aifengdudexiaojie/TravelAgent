@@ -65,6 +65,21 @@ else
   echo "  ⚠️  未读到 LOG_VIEWER_PASSWORD（可选：export APP_DIR=/opt/travelagent），跳过后半段检查"
 fi
 
+echo "== 8. 小红书浏览器运行库（扫码登录的前提） =="
+BROWSER=$(ls /home/*/.cache/xiaohongshu-mcp/browser/*/browser/chrome \
+             /root/.cache/xiaohongshu-mcp/browser/*/browser/chrome 2>/dev/null | head -1 || true)
+if [ -z "$BROWSER" ]; then
+  echo "  ⚠️  还没下载无头浏览器（首次点「登录小红书」时才会下载），跳过此项"
+else
+  MISSING=$(ldd "$BROWSER" 2>/dev/null | grep "not found" || true)
+  if [ -z "$MISSING" ]; then
+    ok "Chromium 系统库齐全（$BROWSER）"
+  else
+    bad "Chromium 缺系统库（登录会失败）：$(echo "$MISSING" | awk '{print $1}' | tr '\n' ' ')"
+    echo "     修复：cd ${APP_DIR:-/opt/travelagent} && sudo bash deploy/install-xhs-deps.sh"
+  fi
+fi
+
 echo
 echo "通过 $pass 项，失败 $fail 项"
 [ "$fail" -eq 0 ] && echo "✅ 验收全部通过" || echo "❌ 有失败项，请对照 docs/deployment-runbook.md 排查"

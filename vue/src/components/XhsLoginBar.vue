@@ -35,6 +35,9 @@ const qrWaitSec = ref(0)
 const qrError = ref('')               // 取码硬失败（例如缺可执行文件）
 const qrLogTail = ref('')
 const showLogTail = ref(false)
+/** 缺系统运行库时的"服务器上一键修复"命令（后端装好依赖后为空） */
+const qrInstallHint = ref('')
+const copiedHint = ref('')
 const now = ref(Date.now())
 
 let timer: number | null = null
@@ -85,6 +88,32 @@ async function refresh() {
   }
 }
 
+/** 后端会把修复命令接在 message 末尾；这里剥掉，改由专门的提示框整块展示 */
+function stripHint(msg: string | undefined, hint: string | undefined) {
+  const text = (msg || '').trim()
+  if (!hint) return text
+  return text.replace(hint, '').trim()
+}
+
+/** 站点是 http 部署时 navigator.clipboard 不可用（非安全上下文），退回 execCommand */
+async function copyText(text: string, tag: string) {
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    const area = document.createElement('textarea')
+    area.value = text
+    area.style.position = 'fixed'
+    area.style.opacity = '0'
+    document.body.appendChild(area)
+    area.select()
+    try { document.execCommand('copy') } catch { /* 都不行就让用户手动选中复制 */ }
+    document.body.removeChild(area)
+  }
+  copiedHint.value = tag
+  window.setTimeout(() => { if (copiedHint.value === tag) copiedHint.value = '' }, 1800)
+}
+
 function resetQrState() {
   qrImage.value = ''
   qrExpiresAt.value = ''
@@ -93,6 +122,7 @@ function resetQrState() {
   qrWaitSec.value = 0
   qrError.value = ''
   qrLogTail.value = ''
+  qrInstallHint.value = ''
   showLogTail.value = false
   slowRetry = 0
 }
@@ -124,19 +154,24 @@ async function fetchQr() {
       qrPending.value = false
       qrError.value = ''
       qrLogTail.value = ''
+      qrInstallHint.value = ''
       pollFast = 120                       // 接下来 ~5 分钟每 2.5s 查一次登录状态
     } else if (data.pending) {
       qrPending.value = true
-      qrPendingMsg.value = data.message || '小红书实例正在启动…'
+      qrInstallHint.value = data.install_hint || ''
+      qrPendingMsg.value = stripHint(data.message, qrInstallHint.value) || '小红书实例正在启动…'
       qrWaitSec.value = data.waited || 0
       qrError.value = ''
     } else {
       qrPending.value = false
-      qrError.value = data.message || '未取到二维码'
+      qrInstallHint.value = data.install_hint || ''
+      qrError.value = stripHint(data.message, qrInstallHint.value)
+        || (qrInstallHint.value ? '小红书实例无法启动，请先按下方命令修复服务器' : '未取到二维码')
       qrLogTail.value = data.log_tail || ''
     }
   } catch (err: any) {
     qrPending.value = false
+    qrInstallHint.value = ''
     qrError.value = apiErrorMessage(err, '获取二维码失败')
   } finally {
     fetchingQr.value = false
@@ -271,6 +306,16 @@ onBeforeUnmount(() => {
     </div>
 
     <p v-if="hint" class="text-[11px] text-red-600 max-w-[640px] text-right">{{ hint }}</p>
+    <!-- 缺浏览器运行库：不会自愈，必须上服务器执行一次修复命令 -->
+    <div v-if="status?.install_hint && !loggedIn" class="max-w-[640px] text-left rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-[11px] font-medium text-amber-800">⚠️ 服务器缺少浏览器运行库，小红书实例起不来（需执行一次修复）</span>
+        <button @click="copyText(status.install_hint, 'bar')" class="shrink-0 text-[11px] text-blue-600 hover:underline">
+          {{ copiedHint === 'bar' ? '已复制' : '复制命令' }}
+        </button>
+      </div>
+      <pre class="mt-1 max-h-32 overflow-auto bg-white/70 text-[10px] text-gray-700 p-2 rounded whitespace-pre-wrap">{{ status.install_hint }}</pre>
+    </div>
     <p v-if="notice" class="text-[11px] text-green-700 max-w-[640px] text-right">{{ notice }}</p>
     <p v-if="error && !hint" class="text-[11px] text-red-600 max-w-[640px] text-right whitespace-pre-wrap">{{ error }}</p>
 
@@ -313,6 +358,17 @@ onBeforeUnmount(() => {
             {{ qrExpired ? '二维码已过期，正在自动刷新…' : `二维码有效期剩余 ${qrRemain} 秒` }}
           </p>
           <p v-if="loggedIn" class="mt-2 text-xs text-green-600 font-medium">✅ 已登录，正在关闭…</p>
+        </div>
+
+        <!-- 缺浏览器运行库：把服务器上要执行的命令直接给出来（可复制） -->
+        <div v-if="qrInstallHint" class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-[11px] font-medium text-amber-800">⚠️ 服务器缺少浏览器运行库（装一次即可，之后扫码正常）</span>
+            <button @click="copyText(qrInstallHint, 'qr')" class="shrink-0 text-[11px] text-blue-600 hover:underline">
+              {{ copiedHint === 'qr' ? '已复制' : '复制命令' }}
+            </button>
+          </div>
+          <pre class="mt-1 max-h-40 overflow-auto bg-white/70 text-[10px] text-gray-700 p-2 rounded whitespace-pre-wrap">{{ qrInstallHint }}</pre>
         </div>
 
         <!-- 启动失败的日志尾部（排查用） -->

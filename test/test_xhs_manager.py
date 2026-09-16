@@ -13,7 +13,9 @@
 import os
 import pathlib
 import shutil
+import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from services import xhs_manager as xm
@@ -383,6 +385,131 @@ class QrcodeLoginTest(_UsersDirCleanup, unittest.TestCase):
         self.assertTrue(result["removed"])
         self.assertFalse(path.exists())
         stop.assert_called_once()
+
+
+class BrowserDepsDiagnosticsTest(_UsersDirCleanup, unittest.TestCase):
+    """云服务器上最常见的启动失败：Chromium 缺系统库（libatk-1.0.so.0 等）。
+
+    这类报错必须被翻译成"缺哪些库 + 复制粘贴就能修的命令"，否则用户只能看到
+    一行 "error while loading shared libraries" 干瞪眼。
+    """
+
+    LAUNCH_ERROR = (
+        "[launcher] Failed to launch the browser, the doc might help "
+        "https://go-rod.github.io/#/compatibility?id=os: "
+        "/home/travelagent/.cache/xiaohongshu-mcp/browser/148.0.7778.215/browser/chrome: "
+        "error while loading shared libraries: libatk-1.0.so.0: cannot open shared object file: "
+        "No such file or directory"
+    )
+
+    def setUp(self):
+        super().setUp()
+        xm._DEPS_CACHE.update({"libs": None, "at": 0.0, "key": ""})
+
+    def tearDown(self):
+        xm._DEPS_CACHE.update({"libs": None, "at": 0.0, "key": ""})
+        super().tearDown()
+
+    # ---------- 从报错文本里抠出 .so 名 ----------
+    def test_detect_missing_lib_from_server_error(self):
+        self.assertEqual(xm.detect_missing_lib(self.LAUNCH_ERROR), "libatk-1.0.so.0")
+        self.assertEqual(xm.detect_missing_lib("一切正常"), "")
+        self.assertEqual(xm.detect_missing_lib(""), "")
+
+    # ---------- .so → apt 包名 + 可复制的修复命令 ----------
+    def test_install_hint_maps_libs_to_apt_packages(self):
+        hint = xm.install_hint(["libatk-1.0.so.0", "libnss3.so"])
+        self.assertIn("libatk-1.0.so.0", hint)
+        self.assertIn("install-xhs-deps.sh", hint)          # 一键脚本
+        self.assertIn("libatk1.0-0", hint)                  # 包名映射
+        self.assertIn("libnss3", hint)
+        self.assertIn("sudo apt-get update", hint)
+
+    def test_install_hint_warns_about_ubuntu_24_naming(self):
+        hint = xm.install_hint(["libasound.so.2"])
+        self.assertIn("libasound2t64", hint)
+
+    def test_install_hint_handles_unknown_lib(self):
+        hint = xm.install_hint(["libweird.so.9"])
+        self.assertIn("apt-file", hint)
+
+    # ---------- ldd 探测（Linux）+ 缓存 ----------
+    def test_browser_missing_libs_parses_ldd_output_and_caches(self):
+        ldd_out = SimpleNamespace(stdout=(
+            "\tlinux-vdso.so.1 (0x00007ffd)\n"
+            "\tlibatk-1.0.so.0 => not found\n"
+            "\tlibnss3.so => not found\n"
+            "\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f)\n"), returncode=0)
+        with patch.object(xm, "PLATFORM", "linux"), \
+             patch.object(xm, "browser_binary_path", return_value=pathlib.Path("/home/u/.cache/chrome")), \
+             patch.object(xm.subprocess, "run", return_value=ldd_out) as run:
+            libs = xm.browser_missing_libs("u")
+            again = xm.browser_missing_libs("u")            # 60s 内命中缓存
+
+        self.assertEqual(libs, ["libatk-1.0.so.0", "libnss3.so"])
+        self.assertEqual(again, libs)
+        self.assertEqual(run.call_count, 1, "轮询状态不能每次都 fork ldd")
+
+    def test_browser_missing_libs_skips_ldd_when_not_linux(self):
+        with patch.object(xm, "PLATFORM", "win32"), \
+             patch.object(xm.subprocess, "run") as run:
+            self.assertEqual(xm.browser_missing_libs("u"), [])
+        run.assert_not_called()
+
+    def test_browser_missing_libs_falls_back_to_instance_log(self):
+        with patch.object(xm, "PLATFORM", "linux"), \
+             patch.object(xm, "browser_binary_path", return_value=None), \
+             patch.object(xm, "instance_log_tail", return_value=self.LAUNCH_ERROR):
+            self.assertEqual(xm.browser_missing_libs("u"), ["libatk-1.0.so.0"])
+
+    def test_browser_env_issue_empty_when_deps_ok(self):
+        with patch.object(xm, "PLATFORM", "linux"), \
+             patch.object(xm, "browser_binary_path", return_value=None), \
+             patch.object(xm, "instance_log_tail", return_value="all good"):
+            self.assertEqual(xm.browser_env_issue("u"), {})
+
+    # ---------- 浏览器路径：优先用日志里那句 using browser binary ----------
+    def test_browser_binary_path_prefers_log_line(self):
+        tmp = pathlib.Path(tempfile.mkdtemp()) / "chrome"
+        tmp.write_text("x", encoding="utf-8")
+        try:
+            with patch.object(xm, "instance_log_tail",
+                              return_value=f"[launcher] using browser binary: {tmp}\n"):
+                self.assertEqual(xm.browser_binary_path("u"), tmp)
+        finally:
+            shutil.rmtree(tmp.parent, ignore_errors=True)
+
+    # ---------- 取码失败时把修复命令带给前端 ----------
+    def test_qr_hard_failure_carries_install_hint(self):
+        issue = {"missing_libs": ["libatk-1.0.so.0"],
+                 "install_hint": "在服务器上执行一次即可：\n  cd /opt/travelagent && sudo bash deploy/install-xhs-deps.sh",
+                 "browser_binary": "/x/chrome"}
+        with patch.object(xm, "MULTI_USER", True), \
+             patch.object(xm, "_http_reachable", return_value=False), \
+             patch.object(xm, "start_mcp", return_value={"ok": False, "message": "MCP 启动超时"}), \
+             patch.object(xm, "browser_env_issue", return_value=issue):
+            result = xm.login_qrcode("test-qr-user")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["missing_libs"], ["libatk-1.0.so.0"])
+        self.assertIn("install-xhs-deps.sh", result["install_hint"])
+        self.assertIn("install-xhs-deps.sh", result["message"])   # 日志/接口里都看得见
+
+    def test_status_endpoint_exposes_install_hint(self):
+        issue = {"missing_libs": ["libatk-1.0.so.0"], "install_hint": "sudo bash deploy/install-xhs-deps.sh",
+                 "browser_binary": ""}
+        with patch.object(xm, "MULTI_USER", True), \
+             patch.object(xm, "login_status", return_value={"logged_in": False, "mcp_running": False,
+                                                            "message": "尚未启动小红书实例"}):
+            with patch.object(xm, "browser_env_issue", return_value=issue):
+                data = xm.status_for("test-qr-user")
+        self.assertEqual(data["missing_libs"], ["libatk-1.0.so.0"])
+        self.assertIn("install-xhs-deps.sh", data["message"])
+
+    def test_with_env_issue_leaves_payload_alone_when_ok(self):
+        payload = {"ok": False, "message": "原始原因"}
+        with patch.object(xm, "browser_env_issue", return_value={}):
+            self.assertIs(xm._with_env_issue("u", payload), payload)
 
 
 if __name__ == "__main__":

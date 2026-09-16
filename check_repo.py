@@ -25,6 +25,13 @@ import pathlib
 import subprocess
 import sys
 
+# Windows 控制台默认 GBK，打印 ✅/⚠️ 会 UnicodeEncodeError（看起来像脚本失败，其实是编码）
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 ROOT = pathlib.Path(__file__).resolve().parent
 
 # 逐文件比对的源码目录（本地文件都应被跟踪）

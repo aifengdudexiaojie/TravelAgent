@@ -303,6 +303,178 @@ def _http_reachable(url: str, timeout: float = 2.0) -> bool:
         return False
 
 
+# ================================================================
+# 浏览器运行时依赖诊断
+# ----------------------------------------------------------------
+# MCP 会自己下载一份 Chromium 到缓存目录（~/.cache/xiaohongshu-mcp/browser/<版本>/browser/chrome），
+# 但它**不会**安装 Chromium 依赖的系统库；最小化的云服务器镜像默认没有这些库，于是启动时报：
+#     chrome: error while loading shared libraries: libatk-1.0.so.0: cannot open shared object file
+# 报错原文对用户毫无意义，所以这里把它翻译成"缺哪些库 + 复制粘贴就能修的命令"。
+# ================================================================
+_DEPS_SCRIPT = "deploy/install-xhs-deps.sh"
+
+# .so 名 → Debian/Ubuntu 包名（只列最容易缺的，其余交给 apt-file）
+_LIB_APT = {
+    "libatk-1.0.so.0": "libatk1.0-0",
+    "libatk-bridge-2.0.so.0": "libatk-bridge2.0-0",
+    "libatspi.so.0": "libatspi2.0-0",
+    "libcups.so.2": "libcups2",
+    "libdrm.so.2": "libdrm2",
+    "libgbm.so.1": "libgbm1",
+    "libnss3.so": "libnss3",
+    "libnssutil3.so": "libnss3",
+    "libsmime3.so": "libnss3",
+    "libnspr4.so": "libnspr4",
+    "libplc4.so": "libnspr4",
+    "libxkbcommon.so.0": "libxkbcommon0",
+    "libxcomposite.so.1": "libxcomposite1",
+    "libxdamage.so.1": "libxdamage1",
+    "libxfixes.so.3": "libxfixes3",
+    "libxrandr.so.2": "libxrandr2",
+    "libxext.so.6": "libxext6",
+    "libxi.so.6": "libxi6",
+    "libxtst.so.6": "libxtst6",
+    "libx11.so.6": "libx11-6",
+    "libx11-xcb.so.1": "libx11-xcb1",
+    "libxcb.so.1": "libxcb1",
+    "libpango-1.0.so.0": "libpango-1.0-0",
+    "libpangocairo-1.0.so.0": "libpango-1.0-0",
+    "libcairo.so.2": "libcairo2",
+    "libglib-2.0.so.0": "libglib2.0-0",
+    "libgobject-2.0.so.0": "libglib2.0-0",
+    "libexpat.so.1": "libexpat1",
+    "libfontconfig.so.1": "libfontconfig1",
+    "libfreetype.so.6": "libfreetype6",
+    "libdbus-1.so.3": "libdbus-1-3",
+    "libasound.so.2": "libasound2",
+}
+
+_MISSING_LIB_RE = re.compile(r"error while loading shared libraries:\s*([^\s:]+)")
+_DEPS_CACHE: Dict[str, Any] = {"libs": None, "at": 0.0, "key": ""}
+
+
+def detect_missing_lib(text: str) -> str:
+    """从日志/报错文本里抠出缺失的 .so 名（没有则返回空串）。"""
+    if not text:
+        return ""
+    match = _MISSING_LIB_RE.search(text)
+    return match.group(1) if match else ""
+
+
+def browser_binary_path(user_id: Optional[str] = None) -> Optional[Path]:
+    """定位 MCP 自己下载的 Chromium。
+
+    优先取实例日志里 "using browser binary: <path>" 那句（最准），
+    取不到再在缓存目录里按平台约定找。
+    """
+    if user_id:
+        for line in reversed(instance_log_tail(user_id, lines=300).splitlines()):
+            match = re.search(r"using browser binary:\s*(.+?)\s*$", line)
+            if not match:
+                continue
+            candidate = Path(match.group(1).strip().strip('"'))
+            if candidate.exists():
+                return candidate
+
+    roots = []
+    if PLATFORM == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            roots.append(Path(local) / "xiaohongshu-mcp" / "browser")
+    else:
+        roots.append(Path.home() / ".cache" / "xiaohongshu-mcp" / "browser")
+    for root in roots:
+        if not root.exists():
+            continue
+        for name in ("chrome", "chrome.exe", "headless_shell", "chromium"):
+            hits = sorted(root.glob(f"*/browser/{name}"))
+            if hits:
+                return hits[-1]
+    return None
+
+
+def browser_missing_libs(user_id: Optional[str] = None, max_age: float = 60.0) -> list:
+    """用 ldd 查出 Chromium 还缺哪些系统库（非 Linux 或查不到时返回空列表）。
+
+    结果缓存 max_age 秒：前端每 2.5s 轮询一次状态，不能每次都 fork 一个 ldd。
+    """
+    if PLATFORM != "linux":
+        return []
+    key = _safe_name(user_id) if user_id else ""
+    now = time.time()
+    cached = _DEPS_CACHE.get("libs")
+    if cached is not None and _DEPS_CACHE.get("key") == key and now - float(_DEPS_CACHE.get("at") or 0) < max_age:
+        return list(cached)
+
+    libs: list = []
+    binary = browser_binary_path(user_id)
+    if binary is not None:
+        try:
+            proc = subprocess.run(["ldd", str(binary)], capture_output=True, text=True, timeout=20)
+            libs = sorted({line.split("=>")[0].strip()
+                           for line in (proc.stdout or "").splitlines() if "not found" in line})
+        except Exception:
+            libs = []
+    if not libs and user_id:
+        # 浏览器还没下载 / ldd 跑不起来 → 退而求其次，从实例日志里抠库名
+        lib = detect_missing_lib(instance_log_tail(user_id, lines=300))
+        if lib:
+            libs = [lib]
+
+    _DEPS_CACHE.update({"libs": libs, "at": now, "key": key})
+    return list(libs)
+
+
+def install_hint(libs: Optional[list] = None) -> str:
+    """把缺失的库翻译成"照抄就能修"的安装命令。"""
+    libs = [lib for lib in (libs or []) if lib]
+    pkgs = sorted({_LIB_APT[lib] for lib in libs if lib in _LIB_APT})
+    unknown = [lib for lib in libs if lib not in _LIB_APT]
+
+    lines = ["服务器缺少浏览器运行库（小红书内置 Chromium 依赖的系统库没装）："]
+    lines.append("  " + ("、".join(libs) if libs else "未能确定具体库名，见下面的安装命令"))
+    lines.append("在服务器上执行一次即可（约 1 分钟，只需一次）：")
+    lines.append(f"  cd /opt/travelagent && sudo bash {_DEPS_SCRIPT}")
+    if pkgs:
+        lines.append("等价命令：")
+        lines.append("  sudo apt-get update && sudo apt-get install -y " + " ".join(pkgs))
+    if any(lib.startswith("libasound") for lib in libs):
+        lines.append("提示：Ubuntu 24.04 起 libasound2 改名为 libasound2t64，装不上时换成后者。")
+    if unknown:
+        lines.append("（未自动识别的库可用 `apt-file search <库名>` 查对应包）")
+    return "\n".join(lines)
+
+
+def browser_env_issue(user_id: Optional[str] = None) -> Dict[str, Any]:
+    """缺运行库时返回 {missing_libs, install_hint, browser_binary}；正常时返回 {}。"""
+    libs = browser_missing_libs(user_id)
+    if not libs:
+        return {}
+    binary = browser_binary_path(user_id)
+    return {
+        "missing_libs": libs,
+        "install_hint": install_hint(libs),
+        "browser_binary": str(binary) if binary else "",
+    }
+
+
+def _with_env_issue(user_id: Optional[str], payload: Dict[str, Any]) -> Dict[str, Any]:
+    """给失败结果补上"缺库"诊断（顺带把提示接到 message 末尾，日志里也看得见）。"""
+    try:
+        issue = browser_env_issue(user_id)
+    except Exception:                                       # 诊断本身绝不能再抛异常
+        issue = {}
+    if not issue:
+        return payload
+    payload = dict(payload)
+    payload.update(issue)
+    hint = issue.get("install_hint", "")
+    message = payload.get("message") or ""
+    if hint and hint not in message:
+        payload["message"] = (message + "\n\n" + hint).strip()
+    return payload
+
+
 def start_mcp(user_id: str, wait: bool = True) -> Dict[str, Any]:
     """启动（或复用）用户自己的 MCP 实例。幂等。
 
@@ -369,17 +541,19 @@ def start_mcp(user_id: str, wait: bool = True) -> Dict[str, Any]:
             _release_port(inst.port)
             with _lock:
                 _instances.pop(inst.user_id, None)
-            return {"ok": False, "url": DEFAULT_URL, "log_tail": instance_log_tail(user_id),
-                    "message": f"MCP 进程启动后立即退出，日志尾部：\n{instance_log_tail(user_id)}"}
+            return _with_env_issue(user_id, {
+                "ok": False, "url": DEFAULT_URL, "log_tail": instance_log_tail(user_id),
+                "message": f"MCP 进程启动后立即退出，日志尾部：\n{instance_log_tail(user_id)}"})
         if _http_reachable(inst.url):
             return {"ok": True, "url": inst.url, "port": inst.port, "pid": proc.pid,
                     "message": "MCP 实例已启动"}
         time.sleep(0.6)
 
-    return {"ok": False, "url": inst.url, "port": inst.port, "log_tail": instance_log_tail(user_id),
-            "message": (f"MCP 启动超时（{START_TIMEOUT:.0f}s）。日志尾部：\n{instance_log_tail(user_id)}\n"
-                        f"提示：首次运行需下载无头浏览器（约 150MB），网络受限时会较慢；"
-                        f"可用 XHS_START_TIMEOUT 调大等待时间")}
+    return _with_env_issue(user_id, {
+        "ok": False, "url": inst.url, "port": inst.port, "log_tail": instance_log_tail(user_id),
+        "message": (f"MCP 启动超时（{START_TIMEOUT:.0f}s）。日志尾部：\n{instance_log_tail(user_id)}\n"
+                    f"提示：首次运行需下载无头浏览器（约 150MB），网络受限时会较慢；"
+                    f"可用 XHS_START_TIMEOUT 调大等待时间")})
 
 
 def instance_ready(user_id: str) -> bool:
@@ -499,28 +673,30 @@ def login_qrcode(user_id: str) -> Dict[str, Any]:
         if not _http_reachable(url):
             waited = int(time.time() - inst.started_at) if inst is not None else 0
             if started.get("pending") or started.get("ok") or started.get("reused"):
-                return {
+                return _with_env_issue(user_id, {
                     "ok": False, "pending": True, "mcp_url": url, "waited": waited,
                     "message": (started.get("message") or "小红书实例正在启动…")
                                + (f"（已等待 {waited}s）" if waited > 5 else ""),
-                }
-            return {"ok": False, "mcp_url": url,
-                    "message": started.get("message") or "小红书实例不可用",
-                    "log_tail": started.get("log_tail", "")}
+                })
+            return _with_env_issue(user_id, {
+                "ok": False, "mcp_url": url,
+                "message": started.get("message") or "小红书实例不可用",
+                "log_tail": started.get("log_tail", "")})
 
     try:
         qr = _qr(url)
     except Exception as exc:
         logger.warning("获取登录二维码失败 user=%s: %s", user_id, exc)
         tail = instance_log_tail(user_id)
-        return {"ok": False, "mcp_url": url, "log_tail": tail,
-                "message": f"获取二维码失败：{exc}" + (f"\n实例日志尾部：\n{tail}" if tail else "")}
+        return _with_env_issue(user_id, {
+            "ok": False, "mcp_url": url, "log_tail": tail,
+            "message": f"获取二维码失败：{exc}" + (f"\n实例日志尾部：\n{tail}" if tail else "")})
 
     if not qr.get("image_base64"):
-        return {
+        return _with_env_issue(user_id, {
             "ok": False, "mcp_url": url, "text": qr.get("text", ""),
             "message": qr.get("text") or "未取到二维码（可能已登录；如需换号请先退出登录）",
-        }
+        })
     return {
         "ok": True,
         "mcp_url": url,
@@ -703,4 +879,10 @@ def status_for(user_id: str) -> Dict[str, Any]:
     })
     if inst is not None:
         data["started_at"] = inst.started_at
+    # 缺浏览器运行库是"启动必定失败"的硬伤：把原因和修复命令一起返回，前端直接展示
+    issue = browser_env_issue(user_id)
+    if issue:
+        data.update(issue)
+        if not data.get("logged_in") and not data.get("mcp_running"):
+            data["message"] = (data.get("message") or "") + "\n" + issue["install_hint"]
     return data

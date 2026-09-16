@@ -111,6 +111,8 @@ LOG_VIEWER_MAX_LINES=3000
 
 # 小红书：放好 Linux x64 版二进制（xiaohongshu-mcp-linux-amd64）即可，
 # 用户在自己浏览器里扫二维码登录；首次启动会自动下载无头浏览器（~150MB）
+# ⚠️ 浏览器依赖的系统库要手动装一次：sudo bash deploy/install-xhs-deps.sh
+#    （不装会报 chrome: error while loading shared libraries: libatk-1.0.so.0 ...）
 # 详见 docs/xhs-multi-user.md 第五节
 XHS_MULTI_USER=true
 XHS_MCP_URL=http://<跑 MCP 的机器>:18060/mcp
@@ -273,6 +275,7 @@ sudo -u travelagent git checkout v1.1.0
 | 攻略生成报「未搜索到有效帖子」 | 小红书未登录或 MCP 未就绪：攻略页点「登录小红书」扫码；`XHS_MULTI_USER=false` 时需另配 `XHS_MCP_URL`。见 `docs/xhs-multi-user.md` |
 | 日志 `Permission denied: .../xiaohongshu-mcp-windows-amd64.exe` | 把 **Windows 版**文件放到 Linux 服务器上了（PE 文件无法执行）→ 换 `xiaohongshu-mcp-linux-amd64` 并 `chmod +x` |
 | 点登录后二维码出不来 | 首次启动 MCP 要下载无头浏览器（~150MB）会慢：看 `logs/xhs-mcp-<user_id>.log`；受限网络需自备 Chromium |
+| 日志 `Failed to launch the browser` / `error while loading shared libraries: libatk-1.0.so.0` | 服务器缺 Chromium 的系统库（MCP 只下载浏览器，不装依赖）→ `sudo bash deploy/install-xhs-deps.sh`（页面也会直接显示这条命令） |
 | 日志服务打不开 | 只监听 127.0.0.1 属正常 → 用 SSH 隧道；或 `.env` 里设 `LOG_VIEWER_HOST=0.0.0.0` 并只放行内网 |
 | 内存吃紧 | ES 最占内存：`ES_JAVA_OPTS=-Xms512m -Xmx1g`；或把 ES 换成托管服务 |
 | 端口 8088 被公网扫到 | 说明安全组放行了它：关掉，只留 80/443 |

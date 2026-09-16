@@ -130,8 +130,12 @@ Windows exe + 弹窗扫码的方案**只适用于本机/内网 Windows 服务器
    现在这种情况会在状态接口与前端直接给出「这是 Windows 可执行文件，当前服务器是 linux」的明确提示。
 3. **登录不需要桌面环境**：二维码由 MCP 的 `get_login_qrcode` 工具生成，后端转 Base64 给前端展示，
    用户手机扫码即可 —— 不需要弹浏览器、不需要 Xvfb/VNC、也不需要用户上传 cookies 文件。
-4. **浏览器不用手动装**：MCP 二进制首次运行会自己下载无头浏览器（约 150MB，落在 `~/.xiaohongshu-mcp/`）。
-   只有在企业网络无法直连下载时才需要自己准备 Chromium。
+4. **浏览器二进制不用手动装，但它依赖的系统库要装**：MCP 首次运行会自己下载无头 Chromium
+   （约 150MB，落在 `~/.cache/xiaohongshu-mcp/browser/<版本>/browser/chrome`），
+   可是 Chromium 依赖的那一堆系统库（libatk / libnss3 / libgbm …）**不会**被一起装上，
+   而最小化的云服务器镜像里恰好没有 —— 表现为实例直接起不来：
+   `chrome: error while loading shared libraries: libatk-1.0.so.0: cannot open shared object file`。
+   解决办法见下面 **「浏览器运行库（每台服务器做一次）」** —— 一条命令，约 1 分钟。
 5. 每用户实例按需创建、空闲（默认 30 分钟）销毁；cookies 存在该用户的工作目录里，不要放进镜像。
 6. 容量估算（按每实例 1 个浏览器进程）：
 
@@ -141,7 +145,40 @@ Windows exe + 弹窗扫码的方案**只适用于本机/内网 Windows 服务器
    | ~10 人 | 3（上限） | 2–3 GB | 8 GB 机型 + 排队提示 |
    | ~50 人 | 需要队列 | 8 GB+ | 实例池 + 任务队列（生成攻略是分钟级任务，适合排队） |
 
-### Linux 服务器落地步骤（比上一版简单很多）
+### 浏览器运行库（每台服务器做一次）
+
+MCP 下载的 Chromium 需要一堆系统库；Ubuntu/Debian 最小镜像里没有。**每台服务器执行一次即可**：
+
+```bash
+cd /opt/travelagent && git pull          # 先拿到 deploy/install-xhs-deps.sh
+sudo bash deploy/install-xhs-deps.sh
+```
+
+脚本会 `apt-get install` 全部依赖（自动跳过该系统不存在的包名，例如 24.04 的 `libasound2t64`），
+最后用 `ldd` 自检并打印还缺什么。等价的手工命令：
+
+```bash
+sudo apt-get update && sudo apt-get install -y \
+  libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libcups2 libdrm2 libgbm1 libnss3 libnspr4 \
+  libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libxext6 libxi6 libxtst6 \
+  libx11-6 libx11-xcb1 libxcb1 libpango-1.0-0 libcairo2 libglib2.0-0 libexpat1 \
+  libfontconfig1 libfreetype6 libdbus-1-3 fonts-liberation fonts-noto-cjk
+# Ubuntu 24.04 上 libasound2 改名为 libasound2t64：
+sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2
+```
+
+自检（**没有输出**才是正常的）：
+
+```bash
+ldd ~/.cache/xiaohongshu-mcp/browser/*/browser/chrome | grep "not found"
+```
+
+装好后不用重启后端：回到网页点「登录小红书」→ 出二维码 → 手机扫码。
+
+> 前端和接口都会**自动识别这类故障**（后端用 `ldd` 查缺哪些库，最多缓存 60 秒），
+> 直接把上面这条命令显示在页面上并提供「复制命令」按钮，所以照抄页面提示也能修。
+
+### Linux 服务器落地步骤
 
 ```bash
 # ① 删掉误传上来的 Windows 版文件（在 Linux 上不可执行，且占 25MB）
@@ -211,6 +248,8 @@ curl -s -X POST http://127.0.0.1:8088/api/xhs/cookies \
 | 日志 `Permission denied: '.../xiaohongshu-mcp-windows-amd64.exe'` | 把 **Windows 版**文件放到 Linux 服务器上了（PE 文件在 Linux 上无法执行） | 按第五节换 Linux 构建 |
 | `Exec format error` | 同上（有的内核先报权限再报格式） | 同上 |
 | 状态里 `exe_error` 提示"未找到 linux 可执行文件" | 只放了 Windows 版 / 文件名不对 | 确认文件名为 `xiaohongshu-mcp-linux-amd64` 且 `chmod +x` |
+| `chrome: error while loading shared libraries: libatk-1.0.so.0 ...` | **服务器缺 Chromium 的系统库**（MCP 只下载浏览器，不装依赖） | 执行一次 `sudo bash deploy/install-xhs-deps.sh`，见第五节「浏览器运行库」；页面上也会直接显示这条命令 |
+| 日志 `Failed to launch the browser` + 上面那条缺库报错 | 同一条问题，`libatk-1.0.so.0` 只是第一个缺的库 | 同上（装完再用 `ldd ... \| grep "not found"` 自检） |
 | **弹窗一直显示「实例启动中…」** | 首次运行 MCP 要下载无头浏览器（~150MB），启动较慢（正常 1–2 分钟） | 等它出图即可；超过 3 分钟就到 `logs/xhs-mcp-<user_id>.log` 看进度，或用 `XHS_START_TIMEOUT` 调大等待 |
 | 弹窗显示红色错误 + 「查看实例日志」 | 取码硬失败（缺可执行文件、平台不对、实例崩溃等） | 点开日志尾部按提示处理；常见的就是上面两条 |
 | 二维码扫了没反应 | 二维码已过期（默认 2 分钟左右） | 弹窗会自动刷新，也可点「🔄 刷新二维码」 |

@@ -181,6 +181,9 @@ python start_mcp.py
 - 攻略页顶部有**状态灯 + 「登录小红书」按钮**：未登录时输入框与「开始规划」禁用
 - 点按钮 → **网页弹出二维码**（由 MCP 的 `get_login_qrcode` 生成）→ 用小红书 App 扫码 → 灯变绿
 - 服务器**不需要**桌面环境/浏览器窗口，用户也**不需要**上传任何文件
+- ⚠️ Linux 服务器请先执行一次 `sudo bash deploy/install-xhs-deps.sh`
+  （MCP 会自己下载无头 Chromium，但**不会**装它依赖的系统库；不装会报
+  `error while loading shared libraries: libatk-1.0.so.0`。页面会自动识别该故障并显示这条命令）
 - 一人一实例（独立工作目录 + 独立端口）：cookies 互不覆盖、账号互不干扰，空闲 30 分钟自动回收
 - 换号：点「🔄 换个账号」→ 自动退出登录并出新码；「📄 导入 cookies.json」仅为迁移已有登录态的高级选项
 - 详见 **`docs/xhs-multi-user.md`**（含 Linux 服务器步骤、Docker 方案、容量估算与排错）
@@ -193,7 +196,7 @@ python start_mcp.py
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest              # 28 个单测，不依赖任何外部服务（ES/LLM/MCP/Redis 全部 mock）
+python -m pytest              # 75 个单测，不依赖任何外部服务（ES/LLM/MCP/Redis 全部 mock）
 ```
 
 覆盖：认证流程、聊天三模式与 SSE 端点、**分析任务归属与越权防护**、
