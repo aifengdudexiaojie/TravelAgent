@@ -50,6 +50,9 @@ let timer: number | null = null
 let countdown: number | null = null
 let pollFast = 0
 let slowRetry = 0
+/** 已登录且弹窗关闭时的状态查询间隔（后端探测可能让 MCP 新起浏览器，不宜太勤） */
+const IDLE_STATUS_PERIOD = 30000
+let lastStatusAt = 0
 
 const loggedIn = computed(() => !!status.value?.logged_in)
 const running = computed(() => !!status.value?.mcp_running)
@@ -68,6 +71,10 @@ const qrWaitSeconds = computed(() =>
   qrShownAt.value ? Math.round((now.value - qrShownAt.value) / 1000) : 0)
 const scanStuck = computed(() =>
   !!qrImage.value && !loggedIn.value && !qrExpired.value && qrWaitSeconds.value >= 60)
+/** 后端正在等扫码（这期间不会去打扰 MCP，所以登录状态靠 cookies 判定） */
+const waitingScan = computed(() => !!status.value?.waiting_scan)
+/** MCP 侧已判定这次登录会话结束（超时或被新码取代）→ 该重新取码了 */
+const scanEnded = computed(() => status.value?.scan_verdict === 'ended')
 
 const dotClass = computed(() => {
   if (error.value || !exeOk.value) return 'bg-red-500'
@@ -273,7 +280,13 @@ onMounted(() => {
       notice.value = `已登录${status.value?.username ? '：' + status.value.username : ''}`
       return
     }
-    if (!loggedIn.value) await refresh()
+    if (!loggedIn.value) {
+      await refresh()
+    } else if (!showQr.value && Date.now() - lastStatusAt >= IDLE_STATUS_PERIOD) {
+      // 已登录且没开弹窗：降频（后端查状态可能让 MCP 新起一个 Chromium，没必要太勤）
+      lastStatusAt = Date.now()
+      await refresh()
+    }
 
     if (!showQr.value) return
     // 启动中/还没出图 → 每次轮询都重试取码（此时还没有登录会话，重复取码无副作用）；
@@ -397,8 +410,12 @@ onBeforeUnmount(() => {
             重新获取会让刚才的扫码失效，请用新二维码再扫一次
           </p>
           <!-- 扫码后没动静：主动引导排查（而不是让用户干等） -->
-          <p v-if="scanStuck && !qrError" class="mt-2 text-[11px] text-amber-700 text-center">
+          <p v-if="scanStuck && !qrError && !scanEnded" class="mt-2 text-[11px] text-amber-700 text-center">
             已经等了 {{ qrWaitSeconds }} 秒还没登录成功 —— 请看下面的排查提示
+          </p>
+          <!-- MCP 侧已判定"未检测到扫码"：直接说清楚，别让用户继续等 -->
+          <p v-if="scanEnded && !loggedIn" class="mt-2 text-[11px] text-amber-700 text-center">
+            服务端这次登录会话已结束（未检测到扫码）—— 请点「🔄 重新获取二维码」再扫一次
           </p>
           <p v-if="loggedIn" class="mt-2 text-xs text-green-600 font-medium">✅ 已登录，正在关闭…</p>
         </div>
@@ -406,11 +423,12 @@ onBeforeUnmount(() => {
         <!-- 扫码后无反应：把最常见的原因和两条出路直接写清楚 -->
         <div v-if="scanStuck && !qrError" class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 leading-relaxed">
           <p class="font-medium">手机上确认登录了吗？</p>
-          <p>① 微信/小红书扫码后，需要在手机上点<b>「确认登录」</b>才算完成。</p>
+          <p>① 小红书扫码后，需要在手机上点<b>「确认登录」</b>才算完成。</p>
           <p>② 如果手机提示<b>「安全验证 / 请再次扫码」</b>：这是小红书的风控二次验证，
              上游 MCP 目前不处理这种弹窗（已知问题），扫码方式会卡住 —— 请改用下面的
              <b>「📄 导入 cookies.json」</b>：在你自己电脑上登录一次，把这个文件导进来即可。</p>
-          <p>③ 不要反复点刷新：重新取码会让刚才的登录失效，请耐心等到 60~90 秒。</p>
+          <p>③ 扫码期间请不要反复点刷新：重新取码会让刚才的登录失效。</p>
+          <p v-if="waitingScan" class="text-amber-700">当前状态：服务端正在等你扫码（最长 4 分钟），期间不会打扰登录流程。</p>
         </div>
 
         <!-- 登录诊断（MCP 原话 + 实例日志尾部）：排查"扫码后没反应"用 -->

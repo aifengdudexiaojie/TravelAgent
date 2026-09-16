@@ -275,7 +275,7 @@ sudo -u travelagent git checkout v1.1.0
 | 攻略生成报「未搜索到有效帖子」 | 小红书未登录或 MCP 未就绪：攻略页点「登录小红书」扫码；`XHS_MULTI_USER=false` 时需另配 `XHS_MCP_URL`。见 `docs/xhs-multi-user.md` |
 | 日志 `Permission denied: .../xiaohongshu-mcp-windows-amd64.exe` | 把 **Windows 版**文件放到 Linux 服务器上了（PE 文件无法执行）→ 换 `xiaohongshu-mcp-linux-amd64` 并 `chmod +x` |
 | 点登录后二维码出不来 | 首次启动 MCP 要下载无头浏览器（~150MB）会慢：看 `logs/xhs-mcp-<user_id>.log`；受限网络需自备 Chromium |
-| 扫码后页面不变绿 | ① 手机上没点「确认登录」；② 触发了小红书二次设备安全验证（上游 MCP 不支持，issue #799）→ 用「📄 导入 cookies.json」把本机登录态搬过去；弹窗里的「登录诊断」会显示 MCP 原话与实例日志 |
+| 扫码后页面不变绿 | ① 手机上没点「确认登录」；② 触发了小红书二次设备安全验证（上游 MCP 不支持，issue #799）→ 用「📄 导入 cookies.json」把本机登录态搬过去；弹窗里的「登录诊断」会显示 MCP 日志。⚠️ 上游每次查登录状态都会**新起一个 Chromium**，所以本项目在发码后进入静默期（只读 cookies.json 与日志），常态查询也缓存 30 秒 —— 请勿绕过接口高频轮询 MCP |
 | 日志 `Failed to launch the browser` / `error while loading shared libraries: libatk-1.0.so.0` | 服务器缺 Chromium 的系统库（MCP 只下载浏览器，不装依赖）→ `sudo bash deploy/install-xhs-deps.sh`（页面也会直接显示这条命令） |
 | 日志服务打不开 | 只监听 127.0.0.1 属正常 → 用 SSH 隧道；或 `.env` 里设 `LOG_VIEWER_HOST=0.0.0.0` 并只放行内网 |
 | 内存吃紧 | ES 最占内存：`ES_JAVA_OPTS=-Xms512m -Xmx1g`；或把 ES 换成托管服务 |

@@ -178,6 +178,14 @@ HEADLESS = _env_flag("XHS_HEADLESS", True)
 # 查登录状态是"每 2.5 秒轮询一次"的调用：MCP 忙起来可能长时间不返回，
 # 用默认 120s 超时会把 /api/xhs/status 一起拖死（前端表现：扫码后页面毫无反应）。
 STATUS_TIMEOUT = float(os.getenv("XHS_STATUS_TIMEOUT", "8"))
+# ⚠️ 每次 check_login_status 都会让 MCP **新起一个 Chromium**（上游 service.go:
+#    CheckLoginStatus → newBrowser() → 导航 /explore → 关掉），实测每次约 4 秒。
+#    所以状态探测必须缓存/节流：不加节流 = 每 4 秒启一个浏览器，云主机直接被拖垮，
+#    而且会跟"等扫码"的登录会话抢资源。
+STATUS_CACHE_SECONDS = float(os.getenv("XHS_STATUS_CACHE", "30"))
+# 等扫码窗口：MCP 侧 get_login_qrcode 会留一个浏览器等 4 分钟（源码里的 timeout）。
+# 这段时间内**完全不能**去调 MCP 查状态，否则就是拿新浏览器去挤登录会话。
+SCAN_WINDOW = float(os.getenv("XHS_SCAN_WINDOW", "300"))
 # 二维码缓存时长：**绝不能**每次请求都去调 MCP 的 get_login_qrcode ——
 # 上游 issue #799 明确：重复调用会新建浏览器并取消旧会话，
 # 于是"用户刚在手机上确认的登录/设备验证上下文"会被顶掉，表现为扫码后永远没反应。
@@ -216,6 +224,12 @@ _ports_in_use: set[int] = set()
 _lock = threading.RLock()
 # 二维码缓存：{user_key: {"at": ts, "payload": {...}}}（进程内，单副本部署假设不变）
 _qr_cache: Dict[str, Dict[str, Any]] = {}
+# 登录状态探测缓存：{user_key: {"at": ts, "payload": {...}}}
+# （每次探测 = 一个 Chromium，必须节流）
+_status_cache: Dict[str, Dict[str, Any]] = {}
+# 扫码等待登记：{user_key: {"issued_at": ts, "cookie_at": mtime}}
+# 有登记 = 用户正在扫码 → 期间**不碰 MCP**，只看 cookies.json 与 MCP 日志
+_scan_watch: Dict[str, Dict[str, Any]] = {}
 
 
 def multi_user_enabled() -> bool:
@@ -522,6 +536,8 @@ def start_mcp(user_id: str, wait: bool = True) -> Dict[str, Any]:
         log_path = LOG_DIR / f"xhs-mcp-{_safe_name(user_id)}.log"
         LOG_DIR.mkdir(exist_ok=True)
         _qr_cache.pop(_qr_cache_key(user_id), None)   # 新实例=新会话，旧二维码作废
+        _status_cache.pop(_qr_cache_key(user_id), None)
+        clear_scan_watch(user_id)
 
         cmd = [str(mcp_exe), f"-port=:{port}", f"-headless={'true' if HEADLESS else 'false'}"]
         logger.info("启动小红书 MCP：user=%s port=%d cwd=%s", user_id, port, workdir)
@@ -574,8 +590,8 @@ def instance_ready(user_id: str) -> bool:
     return _http_reachable(inst.url)
 
 
-def instance_log_tail(user_id: str, lines: int = 8) -> str:
-    """取该用户 MCP 实例日志的尾部（排查启动失败用）。"""
+def instance_log_tail(user_id: str, lines: int = 8, max_bytes: int = 4096) -> str:
+    """取该用户 MCP 实例日志的尾部（排查启动失败/登录会话结局用）。"""
     path = LOG_DIR / f"xhs-mcp-{_safe_name(user_id)}.log"
     try:
         if not path.exists():
@@ -583,7 +599,7 @@ def instance_log_tail(user_id: str, lines: int = 8) -> str:
         with path.open("rb") as fh:
             fh.seek(0, os.SEEK_END)
             size = fh.tell()
-            fh.seek(max(0, size - 4096))
+            fh.seek(max(0, size - max_bytes))
             data = fh.read().decode("utf-8", errors="replace")
         return "\n".join(data.splitlines()[-lines:])
     except OSError:
@@ -594,6 +610,8 @@ def stop_mcp(user_id: str) -> bool:
     with _lock:
         inst = _instances.pop(_safe_name(user_id), None)
     _qr_cache.pop(_qr_cache_key(user_id), None)      # 实例没了，缓存里的码也失效
+    _status_cache.pop(_qr_cache_key(user_id), None)
+    clear_scan_watch(user_id)
     if inst is None:
         return False
     if inst.proc is not None and inst.proc.poll() is None:
@@ -761,6 +779,7 @@ def login_qrcode(user_id: str, force: bool = False) -> Dict[str, Any]:
     }
     # 只缓存成功结果；失败/pending 不缓存，避免把故障状态粘住
     _qr_cache[_qr_cache_key(user_id)] = {"at": time.time(), "payload": dict(payload)}
+    mark_scan_started(user_id)      # 进入"等扫码"状态：这期间不再调 MCP 查状态
     return payload
 
 
@@ -846,6 +865,9 @@ def import_cookies(user_id: str, raw: Any) -> Dict[str, Any]:
         started = start_mcp(user_id)
         restarted = bool(started.get("ok"))
     logger.info("用户 %s 导入了 cookies.json（%d 字节，重启实例=%s）", user_id, len(data), restarted)
+    # 换了登录态：清掉扫码等待与状态缓存，下一次查状态就按新的 cookies 判定
+    clear_scan_watch(user_id)
+    _status_cache.pop(_qr_cache_key(user_id), None)
     return {
         "ok": True,
         "bytes": len(data),
@@ -853,6 +875,117 @@ def import_cookies(user_id: str, raw: Any) -> Dict[str, Any]:
         "restarted": restarted,
         "message": "cookies.json 已导入" + ("，实例已重启以生效" if restarted else "；启动实例后即可使用"),
     }
+
+
+def cookie_mtime(user_id: str) -> float:
+    """cookies.json 的修改时间（不存在返回 0）。"""
+    try:
+        return (workdir_for(user_id) / "cookies.json").stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _line_timestamp(line: str) -> Optional[float]:
+    """解析 logrus 行里的 time="2026-09-16T16:52:42+08:00"。"""
+    match = re.search(r'time="([0-9T:\-+\.]+)"', line)
+    if not match:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(match.group(1)).timestamp()
+    except ValueError:
+        return None
+
+
+def scan_log_verdict(user_id: str, since: float) -> str:
+    """从实例日志里读出 MCP 对该登录会话的最新判断（不调用 MCP，因此不启浏览器）。
+
+    MCP 会打印：
+      · `等待扫码登录，会话 #N，超时 4m0s`                        → waiting
+      · `扫码登录成功，cookies 已保存，会话 #N`                    → success
+      · `登录会话 #N 结束，未检测到扫码（超时或已被新的二维码取代）`  → ended
+    """
+    text = instance_log_tail(user_id, lines=400, max_bytes=262144)
+    if not text:
+        return ""
+    verdict = ""
+    for line in text.splitlines():
+        stamp = _line_timestamp(line)
+        if stamp is not None and stamp < since - 5:
+            continue                                     # 上一轮会话的行，忽略
+        if "扫码登录成功" in line:
+            verdict = "success"
+        elif "结束，未检测到扫码" in line:
+            verdict = "ended"
+        elif "等待扫码登录" in line and verdict == "":
+            verdict = "waiting"
+    return verdict
+
+
+def mark_scan_started(user_id: str) -> None:
+    """登记"刚发出去一张二维码，用户在扫码"。登记期间不再调用 MCP 查状态。
+
+    为什么必须这样：上游 `service.go` 的 `CheckLoginStatus` 每次调用都会
+    `newBrowser()` **新起一个 Chromium**（导航 /explore + sleep 1s，实测约 4 秒），
+    而登录会话要靠**另一个**浏览器活 4 分钟、每 500ms 检查扫码结果。
+    云主机上每 2.5 秒轮询一次 = 不停启浏览器，既挤掉登录会话又让扫码检测失灵，
+    用户看到的就是"扫码后毫无反应"。
+    """
+    _scan_watch[_qr_cache_key(user_id)] = {
+        "issued_at": time.time(),
+        "cookie_at": cookie_mtime(user_id),
+    }
+
+
+def clear_scan_watch(user_id: str) -> None:
+    _scan_watch.pop(_qr_cache_key(user_id), None)
+
+
+def scan_state(user_id: str) -> Dict[str, Any]:
+    """当前是否处于"等扫码"状态，以及 MCP 日志对这一会话的判断。
+
+    返回 {"pending": bool, "issued_at", "cookie_at", "verdict"}
+    verdict: "" / "waiting" / "success" / "ended"
+    """
+    entry = _scan_watch.get(_qr_cache_key(user_id))
+    if not entry:
+        return {"pending": False, "issued_at": 0.0, "cookie_at": 0.0, "verdict": ""}
+
+    issued_at = float(entry.get("issued_at") or 0)
+    cookie_at = float(entry.get("cookie_at") or 0)
+
+    # ① 登录成功的硬证据：cookies.json 在发码之后被 MCP 重写过（且不是 99B 占位）
+    if cookie_present(user_id) and cookie_mtime(user_id) > cookie_at + 0.001:
+        clear_scan_watch(user_id)
+        _status_cache.pop(_qr_cache_key(user_id), None)
+        return {"pending": False, "issued_at": issued_at, "cookie_at": cookie_at,
+                "verdict": "success"}
+
+    # ② 日志里的会话结局（"结束，未检测到扫码" = 这次扫码没成功）
+    verdict = scan_log_verdict(user_id, issued_at)
+    if verdict == "ended" or time.time() - issued_at > SCAN_WINDOW:
+        clear_scan_watch(user_id)
+        _status_cache.pop(_qr_cache_key(user_id), None)
+        return {"pending": False, "issued_at": issued_at, "cookie_at": cookie_at,
+                "verdict": verdict or "ended"}
+
+    return {"pending": True, "issued_at": issued_at, "cookie_at": cookie_at,
+            "verdict": verdict}
+
+
+def cached_status(user_id: str, max_age: float) -> Optional[Dict[str, Any]]:
+    entry = _status_cache.get(_qr_cache_key(user_id))
+    if not entry or time.time() - entry["at"] > max_age:
+        return None
+    payload = dict(entry["payload"])
+    payload["status_age"] = round(time.time() - entry["at"], 1)
+    return payload
+
+
+def _remember_status(user_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """缓存状态探测结果（每次探测=一个 Chromium，必须节流）。"""
+    _status_cache[_qr_cache_key(user_id)] = {"at": time.time(), "payload": dict(payload)}
+    return payload
 
 
 def login_status(user_id: str) -> Dict[str, Any]:
@@ -877,6 +1010,27 @@ def login_status(user_id: str) -> Dict[str, Any]:
         "started": running,
     }
 
+    # ---------- ① 等扫码期间：不打扰 MCP ----------
+    state = scan_state(user_id)
+    if state["verdict"] == "success":
+        info.update({"logged_in": True, "login_state": "cookie_after_scan", "has_cookie": True,
+                     "message": "扫码登录成功（MCP 已保存登录态）"})
+        return info
+    if state["pending"]:
+        info.update({
+            "logged_in": False,
+            "waiting_scan": True,
+            "scan_verdict": state["verdict"],
+            "log_tail": instance_log_tail(user_id, lines=25),
+            "message": "等待手机扫码并点「确认登录」…（扫码期间不查询 MCP，避免打扰登录）",
+        })
+        return info
+
+    # ---------- ② 常态：走缓存，避免每次轮询都让 MCP 新起一个浏览器 ----------
+    cached = cached_status(user_id, STATUS_CACHE_SECONDS)
+    if cached is not None and running:
+        return cached
+
     if MULTI_USER and not running:
         # 服务器上没有可用的 MCP 程序时，直接把原因说清楚（而不是让用户猜）
         exe_path, exe_err = resolve_exe("mcp")
@@ -894,8 +1048,9 @@ def login_status(user_id: str) -> Dict[str, Any]:
         return info
 
     try:
-        # ⚠️ 超时必须短：前端每 2.5 秒问一次，MCP 忙浏览器操作时可能长时间不返回，
-        #    用默认 120s 会把状态接口一起挂住 —— 表现就是"扫码后页面毫无反应"。
+        # ⚠️ 超时必须短：前端每 2.5 秒问一次，MCP 忙（每次探测都要新起 Chromium）时
+        #    可能长时间不返回，用默认 120s 会把状态接口一起挂住 ——
+        #    表现就是"扫码后页面毫无反应"。
         result = _batch_call("tools/call", {"name": "check_login_status"}, base_url=url,
                              max_retries=0, timeout=STATUS_TIMEOUT)
     except TimeoutError:
@@ -913,7 +1068,7 @@ def login_status(user_id: str) -> Dict[str, Any]:
                 "login_state": "cookie_only",
                 "message": "已检测到登录态文件（cookies.json）；状态查询失败，按已登录处理",
             })
-            return info
+            return _remember_status(user_id, info)
         info["message"] = f"状态检查失败：{exc}"
         return info
 
@@ -932,7 +1087,7 @@ def login_status(user_id: str) -> Dict[str, Any]:
         # 小红书有时会在手机确认后追加一次"设备安全验证"，需要再扫一张码；
         # 上游 MCP 尚未处理（issue #799），日志里能看到线索。
         info["log_tail"] = instance_log_tail(user_id, lines=25)
-    return info
+    return _remember_status(user_id, info)
 
 
 def status_for(user_id: str) -> Dict[str, Any]:

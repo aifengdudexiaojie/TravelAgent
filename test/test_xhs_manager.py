@@ -29,11 +29,31 @@ class _FakeProc:
         return None
 
 
+def _iso_now(offset: float = 0) -> str:
+    """生成 MCP 日志里那种时间戳 time="2026-09-16T16:52:42+08:00"。"""
+    from datetime import datetime, timedelta, timezone
+    stamp = datetime.now(timezone(timedelta(hours=8))) + timedelta(seconds=offset)
+    return stamp.strftime("%Y-%m-%dT%H:%M:%S+08:00")
+
+
+def _reset_module_state() -> None:
+    """清掉 xhs_manager 的进程内缓存。
+
+    `_instances` / `_qr_cache` / `_status_cache` / `_scan_watch` 都是模块级状态，
+    测试之间不隔离就会出现"上一个测试的缓存串到下一个"的假失败。
+    """
+    for name in ("_instances", "_qr_cache", "_status_cache", "_scan_watch"):
+        cache = getattr(xm, name, None)
+        if isinstance(cache, dict):
+            cache.clear()
+
+
 class _UsersDirCleanup:
     """测试会调用 workdir_for() 造出用户目录，跑完自动删掉本次新增的，避免污染真实数据。"""
 
     def setUp(self):
         super().setUp()
+        _reset_module_state()
         self._users_before = ({d.name for d in xm.USERS_DIR.iterdir()}
                               if xm.USERS_DIR.exists() else set())
 
@@ -44,6 +64,7 @@ class _UsersDirCleanup:
                     if d.name not in self._users_before:
                         shutil.rmtree(d, ignore_errors=True)
         finally:
+            _reset_module_state()
             super().tearDown()
 
 class WorkdirIsolationTest(_UsersDirCleanup, unittest.TestCase):
@@ -224,6 +245,12 @@ class ExePlatformTest(unittest.TestCase):
 
 
 class ImportCookiesTest(unittest.TestCase):
+    def setUp(self):
+        _reset_module_state()
+
+    def tearDown(self):
+        _reset_module_state()
+
     """cookies.json 导入：无桌面服务器上的登录方式。"""
 
     def setUp(self):
@@ -300,13 +327,23 @@ class QrcodeLoginTest(_UsersDirCleanup, unittest.TestCase):
         self._multi = xm.MULTI_USER
         xm.MULTI_USER = True
         xm._instances.clear()
-        xm._qr_cache.clear()          # 二维码缓存是模块级状态，测试之间必须隔离
+        xm._qr_cache.clear()
+        scratch = getattr(xm, "_status_cache", None)
+        if scratch is not None:
+            scratch.clear()
+        watch = getattr(xm, "_scan_watch", None)
+        if watch is not None:
+            watch.clear()
         self.user = "test-qr-user"
 
     def tearDown(self):
         xm.MULTI_USER = self._multi
         xm._instances.clear()
         xm._qr_cache.clear()
+        for name in ("_status_cache", "_scan_watch"):
+            cache = getattr(xm, name, None)
+            if cache is not None:
+                cache.clear()
         super().tearDown()
 
     # ---------- MCP 客户端：解析二维码（text + image） ----------
@@ -537,6 +574,8 @@ class ScanStuckRegressionTest(_UsersDirCleanup, unittest.TestCase):
         xm.MULTI_USER = True
         xm._instances.clear()
         xm._qr_cache.clear()
+        xm._status_cache.clear()
+        xm._scan_watch.clear()
         self.user = "test-scan-user"
         xm._instances[self.user] = xm.Instance(
             user_id=self.user, port=18123, workdir=xm.workdir_for(self.user), proc=_FakeProc())
@@ -545,6 +584,8 @@ class ScanStuckRegressionTest(_UsersDirCleanup, unittest.TestCase):
         xm.MULTI_USER = self._multi
         xm._instances.clear()
         xm._qr_cache.clear()
+        xm._status_cache.clear()
+        xm._scan_watch.clear()
         super().tearDown()
 
     def _qr_payload(self, expires_at="2099-01-01T00:00:00+08:00"):
@@ -646,6 +687,131 @@ class ScanStuckRegressionTest(_UsersDirCleanup, unittest.TestCase):
 
         self.assertEqual(qr.call_args_list[0].args, ("u", True))
         self.assertEqual(qr.call_args_list[1].args, ("u", False))
+
+
+class ScanQuietModeTest(_UsersDirCleanup, unittest.TestCase):
+    """等扫码期间**绝不**去碰 MCP。
+
+    上游 `service.go` 的 CheckLoginStatus 每次调用都会 newBrowser() 新起一个
+    Chromium（实测 ~4 秒），而登录会话要靠另一个浏览器活 4 分钟、每 500ms 检测
+    扫码 —— 用户日志显示我们每 2.5 秒轮询一次，等于不停启浏览器把登录会话挤掉，
+    这就是"扫码后毫无反应"的主因。所以：发码后进入静默期，只看 cookies.json 与
+    日志；平时查状态也必须缓存节流。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._multi = xm.MULTI_USER
+        xm.MULTI_USER = True
+        xm._instances.clear()
+        xm._qr_cache.clear()
+        xm._status_cache.clear()
+        xm._scan_watch.clear()
+        self.user = "test-quiet-user"
+        xm._instances[self.user] = xm.Instance(
+            user_id=self.user, port=18124, workdir=xm.workdir_for(self.user), proc=_FakeProc())
+
+    def tearDown(self):
+        xm.MULTI_USER = self._multi
+        xm._instances.clear()
+        xm._qr_cache.clear()
+        xm._status_cache.clear()
+        xm._scan_watch.clear()
+        super().tearDown()
+
+    def _issue_qr(self):
+        with patch.object(xm, "_http_reachable", return_value=True), \
+             patch("xiaohongshu_mcp_client.get_login_qrcode",
+                   return_value={"text": "扫码", "image_base64": "AAAA", "mime": "image/png",
+                                 "expires_at": "2099-01-01T00:00:00+08:00"}):
+            return xm.login_qrcode(self.user)
+
+    # ---------- 发码后进入静默：查状态不碰 MCP ----------
+    def test_status_during_scan_never_calls_mcp(self):
+        self._issue_qr()
+        self.assertTrue(xm.scan_state(self.user)["pending"])
+
+        with patch("xiaohongshu_mcp_client._batch_call") as call:
+            info = xm.login_status(self.user)
+
+        call.assert_not_called()                      # ⚠️ 核心：一个浏览器都不许启
+        self.assertFalse(info["logged_in"])
+        self.assertTrue(info["waiting_scan"])
+        self.assertIn("等待手机扫码", info["message"])
+
+    def test_scan_success_detected_from_cookie_file_without_mcp(self):
+        self._issue_qr()
+        # MCP 扫码成功后会把 cookies.json 重写（>500B）
+        time.sleep(0.01)
+        (xm.workdir_for(self.user) / "cookies.json").write_text(
+            '{"cookies":[' + "x" * 600 + "]}", encoding="utf-8")
+
+        with patch("xiaohongshu_mcp_client._batch_call") as call:
+            info = xm.login_status(self.user)
+
+        call.assert_not_called()
+        self.assertTrue(info["logged_in"])
+        self.assertEqual(info["login_state"], "cookie_after_scan")
+        self.assertFalse(xm.scan_state(self.user)["pending"], "登录成功后应退出静默期")
+
+    def test_mcp_log_ended_ends_quiet_period(self):
+        self._issue_qr()
+        ended = (f'time="{_iso_now()}" level=info '
+                 'msg="登录会话 #1 结束，未检测到扫码（超时或已被新的二维码取代）"')
+        with patch.object(xm, "instance_log_tail", return_value=ended):
+            state = xm.scan_state(self.user)
+        self.assertFalse(state["pending"])
+        self.assertEqual(state["verdict"], "ended")
+
+    # ---------- 常态查状态：必须缓存节流（每次探测=一个 Chromium） ----------
+    def test_status_probe_is_cached_between_polls(self):
+        with patch("xiaohongshu_mcp_client._batch_call",
+                   return_value={"content": [{"type": "text", "text": "✅ 已登录 用户名: 小明"}]}) as call:
+            first = xm.login_status(self.user)
+            second = xm.login_status(self.user)
+
+        self.assertEqual(call.call_count, 1, "2.5 秒轮询不能每次都让 MCP 新起浏览器")
+        self.assertTrue(first["logged_in"])
+        self.assertTrue(second["logged_in"])
+        self.assertIn("status_age", second)
+
+    def test_starting_scan_clears_status_cache(self):
+        with patch("xiaohongshu_mcp_client._batch_call",
+                   return_value={"content": [{"type": "text", "text": "❌ 未登录"}]}):
+            xm.login_status(self.user)
+        self.assertIsNotNone(xm.cached_status(self.user, 60))
+        with patch("xiaohongshu_mcp_client._batch_call",
+                   return_value={"content": [{"type": "text", "text": "❌ 未登录"}]}):
+            xm.login_status(self.user)
+        self._issue_qr()                              # 发码 → 旧状态缓存必须失效
+        self.assertTrue(xm.scan_state(self.user)["pending"])
+
+    # ---------- 日志解析 ----------
+    def test_scan_log_verdict_parsing(self):
+        lines = "\n".join([
+            f'time="{_iso_now(-600)}" level=info msg="等待扫码登录，会话 #1，超时 4m0s"',
+            f'time="{_iso_now(-300)}" level=info msg="登录会话 #1 结束，未检测到扫码（超时）"',
+            f'time="{_iso_now(-10)}" level=info msg="等待扫码登录，会话 #2，超时 4m0s"',
+        ])
+        with patch.object(xm, "instance_log_tail", return_value=lines):
+            self.assertEqual(xm.scan_log_verdict(self.user, time.time() - 60), "waiting")
+
+        lines2 = lines + "\n" + f'time="{_iso_now()}" level=info msg="扫码登录成功，cookies 已保存，会话 #2"'
+        with patch.object(xm, "instance_log_tail", return_value=lines2):
+            self.assertEqual(xm.scan_log_verdict(self.user, time.time() - 60), "success")
+
+    def test_scan_log_verdict_ignores_old_sessions(self):
+        old = f'time="{_iso_now(-900)}" level=info msg="登录会话 #7 结束，未检测到扫码（超时）"'
+        with patch.object(xm, "instance_log_tail", return_value=old):
+            self.assertEqual(xm.scan_log_verdict(self.user, time.time() - 10), "")
+
+    def test_scan_watch_survives_within_window_and_expires(self):
+        self._issue_qr()
+        self.assertTrue(xm.scan_state(self.user)["pending"])
+        # 手工把发码时间挪到窗口之外 → 静默期结束
+        xm._scan_watch[xm._qr_cache_key(self.user)]["issued_at"] = time.time() - xm.SCAN_WINDOW - 1
+        with patch.object(xm, "instance_log_tail", return_value=""):
+            self.assertFalse(xm.scan_state(self.user)["pending"])
 
 
 if __name__ == "__main__":
