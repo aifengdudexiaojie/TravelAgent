@@ -334,9 +334,9 @@ function openDesktopWindow() {
   if (deskFrameUrl.value) window.open(deskFrameUrl.value, '_blank', 'width=1280,height=900')
 }
 
-/** 投屏可用且不是无头模式 → 弹窗就用投屏当登录界面 */
+/** 投屏只作为**管理员排错**手段（默认关闭）：普通用户走"二维码 + 短信验证码"的纯网页流程 */
 const deskPrimary = computed(() =>
-  !!(desk.value?.available && !desk.value?.warning))
+  !!(desk.value?.enabled && desk.value?.available && !desk.value?.warning))
 /** 框里加载出来的不是 noVNC，而是本站页面（说明 nginx 没放行 /vnc/，被 SPA 兜底吃掉了） */
 const deskWrong = ref(false)
 const deskUsingLocal = ref(false)
@@ -623,10 +623,10 @@ onBeforeUnmount(() => {
       @click.self="closeQr"
     >
       <div class="bg-white rounded-2xl w-full p-5 text-left"
-           :class="deskPrimary ? 'max-w-5xl' : 'max-w-sm'">
+           :class="deskPrimary ? 'max-w-5xl' : 'max-w-md'">
         <div class="flex items-start justify-between mb-3">
           <h3 class="text-base font-bold text-gray-800">
-            {{ deskPrimary ? '🖥️ 小红书登录（这里是服务器上的浏览器，直接操作即可）' : '📱 用小红书 App 扫码登录' }}
+            {{ deskPrimary ? '🖥️ 小红书登录（管理员排错模式：直接操作服务器浏览器）' : '📱 用小红书 App 扫码登录' }}
           </h3>
           <button @click="closeQr" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
         </div>
@@ -744,7 +744,7 @@ onBeforeUnmount(() => {
         <!-- ================= 备用：二维码为主（没装投屏时） ================= -->
         <template v-else>
         <div class="flex flex-col items-center">
-          <div class="w-56 h-56 border border-gray-100 rounded-xl flex items-center justify-center bg-gray-50 overflow-hidden">
+          <div class="w-64 h-64 border border-gray-100 rounded-xl flex items-center justify-center bg-gray-50 overflow-hidden">
             <!-- ① 出图 -->
             <img v-if="qrImage" :src="qrImage" alt="登录二维码" class="w-full h-full object-contain" />
 
@@ -763,15 +763,14 @@ onBeforeUnmount(() => {
             <span v-else class="text-xs text-gray-400 px-4 text-center">点击下方「刷新二维码」获取</span>
           </div>
 
-          <p v-if="qrImage" class="mt-3 text-xs text-gray-500 text-center">
-            打开小红书 App →「我」→ 右上角扫一扫
-          </p>
+          <!-- 三步说明：终端用户只需要看这三句（多用户场景下每个人的流程都一样） -->
+          <ol v-if="qrImage && !loggedIn" class="mt-3 text-xs text-gray-600 text-left leading-relaxed list-decimal pl-5">
+            <li>打开小红书 App → 点右上角「扫一扫」，扫上面的二维码</li>
+            <li>手机上点「<b>确认登录</b>」</li>
+            <li>如果小红书弹出<b>短信验证码 / 安全验证</b>，按下面的提示补充即可</li>
+          </ol>
           <p v-if="qrImage && liveMode" class="mt-1 text-[11px] text-gray-400 text-center">
-            这是第 {{ qrSeq }} 次读取的<b>最新</b>二维码（服务器只做"读取"，不会打断你的登录）
-          </p>
-          <p v-if="qrImage && liveMode" class="mt-1 text-[11px] text-gray-400 text-center">
-            二维码变化是小红书页面自己在轮换，属正常；<b>手机上确认后就不要再扫，等 5~10 秒</b>。
-            若手机提示「二维码已失效」，点下方「🔄 重新获取二维码」再扫一次即可。
+            二维码由服务器实时读取（第 {{ qrSeq }} 次），过期会自动更新，直接扫当前这张即可
           </p>
           <!-- ② 二次设备安全验证：把那张要扫的码给出来（上游 MCP 做不到这点） -->
           <div v-if="liveMode && liveState === 'verify'" class="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 text-center leading-relaxed">
@@ -906,9 +905,9 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- 没装投屏时的提示：装上就能"直接操作服务器浏览器" -->
-          <div v-if="desk && !deskPrimary" class="mt-3 w-full rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
-            <p class="text-[11px] font-medium text-blue-800">🖥️ 想让扫码/短信验证更省心？装一次投屏即可（在网页里直接操作服务器浏览器）</p>
+          <!-- 没装投屏时的提示：装上就能"直接操作服务器浏览器"（**仅管理员排错用**） -->
+          <div v-if="desk?.enabled && desk && !deskPrimary" class="mt-3 w-full rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+            <p class="text-[11px] font-medium text-blue-800">🖥️ 管理员排错模式：装一次投屏就能在网页里直接操作服务器浏览器（普通用户可以不管这个）</p>
             <p v-if="desk.hint" class="mt-1 text-[11px] text-amber-800 whitespace-pre-wrap">{{ desk.hint }}</p>
             <p v-if="desk.warning" class="mt-1 text-[11px] text-amber-800 whitespace-pre-wrap">{{ desk.warning }}</p>
           </div>

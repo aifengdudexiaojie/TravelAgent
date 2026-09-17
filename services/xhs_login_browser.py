@@ -320,9 +320,26 @@ class _LiveSession:
         except Exception:
             pass
         await self._goto_explore()
+        await self._humanize()
         self._session0 = await self._web_session()      # 记录登录前的 web_session，用于对比
         self._last_src = ""                             # 上一次看到的二维码内容
         self._last_src_at = time.time()
+
+    async def _humanize(self) -> None:
+        """先像真人一样逛两下再出码。
+
+        小红书对"刚打开页面就要求登录的新设备"风控更严（会直接甩短信验证码）。
+        轻量地滚动、移动鼠标、稍等一下，能降低触发概率；成本几乎为零。
+        """
+        try:
+            for _ in range(2):
+                await self._page.mouse.move(300, 400)
+                await self._page.mouse.wheel(0, 600)
+                await self._page.wait_for_timeout(700)
+            await self._page.mouse.move(640, 450)
+            await self._page.wait_for_timeout(500)
+        except Exception as exc:
+            logger.info("预热页面失败（忽略）：%s", exc)
 
     def _remember_console(self, line: str) -> None:
         self._console.append(line[:300])
@@ -590,57 +607,141 @@ class _LiveSession:
                 continue
         return None
 
+    async def _focused_input(self):
+        """当前页面**自动聚焦**的输入框。
+
+        XHS 风控弹窗一出现通常会把光标放进验证码框，先试这个最省事、也最不依赖选择器。
+        必须确认它真的是可见的 INPUT/TEXTAREA（聚焦的可能只是 body 或某个 div）。
+        """
+        try:
+            ok = await self._page.evaluate(
+                "() => { const el = document.activeElement;"
+                " return !!(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')"
+                " && (el.offsetParent !== null || el.getClientRects().length > 0)); }")
+        except Exception:
+            return None
+        if not ok:
+            return None
+        try:
+            loc = self._page.locator(":focus")
+            if await loc.count() > 0:
+                return loc
+        except Exception:
+            pass
+        return None
+
+    async def _sms_still_there(self) -> bool:
+        text = await self._page_text()
+        return any(h in text for h in SMS_HINTS)
+
+    async def _code_error(self) -> str:
+        text = await self._page_text()
+        for bad in ("验证码错误", "验证码不正确", "验证码有误", "验证码已失效", "请重新获取"):
+            if bad in text:
+                return bad
+        return ""
+
+    async def _visible_buttons(self) -> List[str]:
+        try:
+            return await self._page.evaluate("""() => {
+                return [...document.querySelectorAll('button, [role=button], .reds-button-new, span, div')]
+                    .filter(el => el.offsetParent !== null && el.getClientRects().length > 0)
+                    .map(el => (el.innerText || '').trim())
+                    .filter(t => t && t.length <= 8);
+            }""")
+        except Exception:
+            return []
+
     async def submit_code(self, code: str) -> Dict[str, Any]:
-        """把短信验证码填进页面并提交（小红书风控要求时用）。"""
+        """把短信验证码填进页面并提交（小红书风控要求时用）。
+
+        策略（从最不依赖选择器到最依赖）：
+          ① 用页面**自动聚焦**的输入框（风控弹窗一般会把光标放进验证码框）
+          ② 找不到就用候选选择器（placeholder/class/name 含验证码 → 最后一个可见输入框）
+          ③ 逐字输入（像真人打字），先按回车，不行再点"验证/确定/提交"按钮
+          ④ 提交后重新读页面：验证码错误/通过/仍在等待，都如实回报
+        """
         self.last_used = time.time()
         code = (code or "").strip()
         if not code:
             return {"ok": False, "state": self.last_state, "message": "请先填写收到的验证码"}
-        try:
+
+        tried: List[str] = []
+        box = await self._focused_input()
+        if box is not None:
+            tried.append("聚焦输入框")
+        else:
             box = await self._find_code_input()
-            if box is None:
-                inputs = await self._visible_inputs()
-                return {"ok": False, "state": "verify_sms",
-                        "message": "页面上找不到验证码输入框，请在「登录诊断」里查看输入框信息",
-                        "inputs": inputs}
-            # 有些验证码是"一格一位"的多个输入框：位数对得上就逐格填
-            singles = [el for el in await self._visible_inputs()
-                       if el.get("maxlength") == 1]
-            if len(singles) >= 2 and len(singles) >= len(code):
+            tried.append("候选选择器")
+        if box is None:
+            return {"ok": False, "state": "verify_sms",
+                    "message": "页面上找不到验证码输入框，请把下面这份输入框信息发给我（或打开管理员排错模式）",
+                    "inputs": await self._visible_inputs()}
+
+        try:
+            # 多格验证码（一格一位）：点第一格后逐字输入，焦点一般会自动前进
+            singles = [el for el in await self._visible_inputs() if el.get("maxlength") == 1]
+            if len(singles) >= 4:
                 boxes = self._page.locator("input[maxlength='1']")
-                total = await boxes.count()
-                for i, digit in enumerate(code):
-                    if i >= total:
-                        break
-                    await boxes.nth(i).fill(digit)
-                logger.info("按逐格方式填入验证码（%d 格）：user=%s", len(code), self.user_id)
+                await boxes.first.click()
+                await self._page.keyboard.type(code, delay=60)
+                tried.append("逐格输入")
             else:
                 await box.click()
-                await box.fill(code)
-            # 提交：优先"验证/确定/提交/登录"按钮，否则直接回车
-            clicked = False
-            for label in ("验证", "确定", "提交", "登录", "确认"):
                 try:
-                    btn = self._page.get_by_role("button", name=re.compile(rf"^{label}$"))
-                    if await btn.count() > 0:
-                        await btn.first.click()
-                        clicked = True
-                        break
-                except Exception:
-                    continue
-            if not clicked:
-                try:
-                    await box.press("Enter")
+                    await box.fill("")
                 except Exception:
                     pass
-            await self._page.wait_for_timeout(3000)
-            data = await self._snapshot()
-            data["ok"] = True
-            data["submitted"] = True
-            return data
+                await self._page.keyboard.type(code, delay=60)
+                tried.append("逐字输入")
         except Exception as exc:
-            logger.warning("提交短信验证码失败：user=%s %s", self.user_id, exc)
-            return {"ok": False, "state": "error", "message": f"提交验证码失败：{exc}"}
+            logger.warning("填入验证码失败：user=%s %s", self.user_id, exc)
+            try:
+                await box.fill(code)
+                tried.append("直接填值")
+            except Exception as exc2:
+                return {"ok": False, "state": "error", "message": f"填入验证码失败：{exc2}"}
+
+        # 提交：回车 → 按钮文字 → 按钮列表
+        submitted_by = ""
+        for how in ("enter", "role", "text"):
+            try:
+                if how == "enter":
+                    await self._page.keyboard.press("Enter")
+                elif how == "role":
+                    for label in ("验证", "确定", "提交", "确认", "登录"):
+                        btn = self._page.get_by_role("button", name=re.compile(rf"^{label}$"))
+                        if await btn.count() > 0 and await btn.first.is_visible():
+                            await btn.first.click()
+                            break
+                else:
+                    for label in ("验证", "确定", "提交", "确认"):
+                        btn = self._page.get_by_text(label, exact=True)
+                        if await btn.count() > 0 and await btn.first.is_visible():
+                            await btn.first.click()
+                            break
+            except Exception:
+                continue
+            await self._page.wait_for_timeout(2500)
+            if not await self._sms_still_there():
+                submitted_by = how
+                break
+            submitted_by = submitted_by or how
+
+        await self._page.wait_for_timeout(1500)
+        data = await self._snapshot()
+        data["ok"] = True
+        data["submitted"] = True
+        data["tried"] = tried
+        data["submitted_by"] = submitted_by
+        logger.info("已提交短信验证码：user=%s 策略=%s 提交方式=%s 结果状态=%s",
+                    self.user_id, tried, submitted_by, data.get("state"))
+        if data.get("state") == "verify_sms":
+            err = await self._code_error()
+            data["message"] = (f"页面提示「{err}」，请重新获取验证码再试"
+                               if err else
+                               "已提交，但小红书仍在等待验证码 —— 请检查输入是否正确，或点「重新发送验证码」")
+        return data
 
     async def send_code(self) -> Dict[str, Any]:
         """点一次「获取验证码」（有些流程不会自动发短信）。"""
@@ -729,6 +830,13 @@ def active_sessions() -> List[Dict[str, Any]]:
                  "error": s.last_error} for s in _sessions.values()]
 
 
+def _env_true(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 _desktop_cache: Dict[str, Any] = {"at": 0.0, "data": None}
 
 
@@ -767,6 +875,10 @@ def desktop_view() -> Dict[str, Any]:
     data = {
         "ok": True,
         "available": reachable,
+        # ⚠️ 投屏是**管理员排错工具**，不是给终端用户的登录方式：要靠 SSH 隧道/nginx 口令，
+        #    而且多个用户共用同一个虚拟屏幕（互相能看到对方窗口）。默认关闭，需要时在 .env 里
+        #    设 XHS_SHOW_DESKTOP_VIEW=true。终端用户的正常流程是"网页二维码 + 短信验证码输入"。
+        "enabled": _env_true("XHS_SHOW_DESKTOP_VIEW", False),
         "lite": has_lite,
         "port": port,
         "display": display,
