@@ -390,6 +390,34 @@ class DesktopViewTest(unittest.TestCase):
         self.assertEqual(get.call_count, 2, "前端会频繁查，必须缓存")
 
 
+class ProxyConfigTest(unittest.TestCase):
+    """云 IP 会触发小红书风控（实测本地同流程无短信、云上要短信），所以要支持走代理。"""
+
+    def test_no_proxy_by_default(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertIsNone(lb.proxy_config())
+
+    def test_login_proxy_takes_priority_over_shared(self):
+        with patch.dict("os.environ", {"XHS_PROXY": "http://shared:1", 
+                                       "XHS_LOGIN_PROXY": "http://login:2"}, clear=True):
+            self.assertEqual(lb.proxy_config()["server"], "http://login:2")
+
+    def test_credentials_are_split_out(self):
+        with patch.dict("os.environ", {"XHS_PROXY": "socks5://user:p%40ss@1.2.3.4:1080"},
+                        clear=True):
+            cfg = lb.proxy_config()
+        self.assertEqual(cfg["server"], "socks5://1.2.3.4:1080")
+        self.assertEqual(cfg["username"], "user")
+        self.assertEqual(cfg["password"], "p@ss")          # URL 编码要还原
+
+    def test_masked_never_leaks_password(self):
+        with patch.dict("os.environ", {"XHS_PROXY": "http://user:secret@1.2.3.4:8080"},
+                        clear=True):
+            masked = lb._masked_proxy(lb.proxy_config())
+        self.assertIn("1.2.3.4:8080", masked)
+        self.assertNotIn("secret", masked)
+
+
 class AvailabilityTest(unittest.TestCase):
     def test_reports_ok_when_playwright_installed(self):
         with patch.object(lb, "_availability", None):

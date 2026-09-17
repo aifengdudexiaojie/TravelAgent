@@ -319,11 +319,15 @@ class _LiveSession:
         }
         if exe:
             kwargs["executable_path"] = exe
+        proxy = proxy_config()
+        if proxy:
+            kwargs["proxy"] = proxy
 
         self._ctx = await self._pw.chromium.launch_persistent_context(str(profile), **kwargs)
         self._ctx.set_default_timeout(30000)
-        logger.info("扫码登录浏览器已启动：user=%s headless=%s profile=%s exe=%s",
-                    self.user_id, headless, profile.name, exe or "(playwright 自带)")
+        logger.info("扫码登录浏览器已启动：user=%s headless=%s profile=%s 代理=%s exe=%s",
+                    self.user_id, headless, profile.name,
+                    _masked_proxy(proxy) or "（未使用）", exe or "(playwright 自带)")
         self._page = self._ctx.pages[0] if self._ctx.pages else await self._ctx.new_page()
         # 页面的 console / JS 报错也收下来：登录卡住时它们经常是唯一线索
         try:
@@ -905,6 +909,43 @@ def _env_true(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def proxy_config() -> Optional[Dict[str, str]]:
+    """登录浏览器要不要走代理。
+
+    为什么需要：小红书的风控对**云服务器 IP** 明显更严 —— 实测同一套流程、
+    同样全新的 profile，在家庭/办公宽带（本地 Windows）扫码直接成功，
+    在云主机上却被要求短信验证码（而短信有每日额度，试几次就发不出来了）。
+    让登录（以及后续抓取用的 MCP）走同一个住宅/家宽代理，XHS 看到的就不是云 IP。
+
+    取值优先级：XHS_LOGIN_PROXY > XHS_PROXY（后者 MCP 也用，保持一致最好）。
+    支持 http://user:pass@host:port 与 socks5://user:pass@host:port。
+    """
+    from urllib.parse import unquote, urlparse
+
+    raw = (os.getenv("XHS_LOGIN_PROXY") or os.getenv("XHS_PROXY") or "").strip()
+    if not raw:
+        return None
+    try:
+        u = urlparse(raw if "://" in raw else f"http://{raw}")
+        if not u.hostname:
+            return None
+        cfg: Dict[str, str] = {"server": f"{u.scheme}://{u.hostname}:{u.port or 80}"}
+        if u.username:
+            cfg["username"] = unquote(u.username)
+            cfg["password"] = unquote(u.password or "")
+        return cfg
+    except Exception:
+        logger.warning("XHS_PROXY 解析失败，忽略：%s", raw[:30])
+        return None
+
+
+def _masked_proxy(cfg: Optional[Dict[str, str]]) -> str:
+    if not cfg:
+        return ""
+    server = cfg.get("server", "")
+    return f"{server}（带认证）" if cfg.get("username") else server
+
+
 _desktop_cache: Dict[str, Any] = {"at": 0.0, "data": None}
 
 
@@ -951,6 +992,7 @@ def desktop_view() -> Dict[str, Any]:
         "port": port,
         "display": display,
         "headless": headless,
+        "proxy": _masked_proxy(proxy_config()),
         # 走站点域名时 nginx 会弹"用户名/密码"（保护远程桌面）；口令不在这里返回，
         # 只告诉前端用户名，口令在安装脚本输出里 / .env 的 LOG_VIEWER_PASSWORD。
         "auth_user": os.getenv("XHS_VNC_USER", "admin"),
