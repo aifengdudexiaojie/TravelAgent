@@ -52,6 +52,12 @@ LOGIN_SEL = ".main-container .user .link-wrapper .channel"      # 出现即"已�
 QR_SEL = ".login-container .qrcode-img"                         # 常规登录二维码
 CAPTCHA_SEL = ".r-captcha-modal .qrcode-img"                    # 二次设备安全验证二维码
 
+# 页面文本里的风控/中间态关键词（实测 2026-09：扫码后会先"扫码成功 请在手机上确认"，
+# 风控触发时再要求"短信验证码验证"，验证码发到绑定手机号上）
+SCANNED_HINTS = ("扫码成功", "请在手机上确认")
+SMS_HINTS = ("短信验证码", "验证码将发送至", "获取验证码", "没有收到验证码")
+PHONE_RE = re.compile(r"(\+?\d{2,3}[\s-]?\d{3}\*{2,}\d{2,4})")
+
 HEADLESS_ENV = os.getenv("XHS_LOGIN_HEADLESS", "auto").strip().lower()
 
 
@@ -373,6 +379,17 @@ class _LiveSession:
             return "", ""
         return match.group(1), match.group(2)
 
+    async def _page_text(self) -> str:
+        try:
+            return await self._page.evaluate("() => document.body.innerText || ''")
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _sms_phone(text: str) -> str:
+        match = PHONE_RE.search(text or "")
+        return match.group(1) if match else ""
+
     async def _save_and_report_login(self, why: str) -> Dict[str, Any]:
         cookies = await self._ctx.cookies()
         count = write_cookies(cookie_file(self.workdir), cookies)
@@ -390,14 +407,26 @@ class _LiveSession:
             self._empty_streak = 0
             return await self._save_and_report_login("登录 cookie 已更新")
 
-        # ② 二次设备安全验证：小红书会弹出另一张要扫的码（上游 MCP 不处理这个）
+        # ② 风控中间态：先"扫码成功，请在手机上确认"，风控触发时再要"短信验证码"。
+        #    这两种状态页面文本里写得很清楚，必须识别出来——否则用户只看到二维码，
+        #    完全不知道服务端其实在等他输短信验证码。
+        text = await self._page_text()
+        if any(h in text for h in SMS_HINTS):
+            self._empty_streak = 0
+            phone = self._sms_phone(text)
+            return {"state": "verify_sms", "phone": phone,
+                    "message": (f"小红书要求短信验证：验证码已发到 {phone}，请在下方输入"
+                                if phone else "小红书要求短信验证，请在下方输入收到的验证码"),
+                    "text": re.sub(r"\s+", " ", text)[:300]}
+
+        # ③ 二次设备安全验证：小红书会弹出另一张要扫的码（上游 MCP 不处理这个）
         if await self._count(CAPTCHA_SEL) > 0:
             self._empty_streak = 0
             mime, b64 = self._split_data_url(await self._qr_src(CAPTCHA_SEL) or "")
             return {"state": "verify", "mime": mime or "image/png", "image_base64": b64,
                     "message": "小红书要求二次安全验证：请再扫这张码"}
 
-        # ③ 常规登录二维码（实时读取，永远是当前这张）
+        # ④ 常规登录二维码（实时读取，永远是当前这张）
         src = await self._qr_src(QR_SEL) if await self._count(QR_SEL) > 0 else None
         if src:
             self._empty_streak = 0
@@ -415,8 +444,12 @@ class _LiveSession:
             if src:
                 mime, b64 = self._split_data_url(src)
                 if b64:
+                    scanned = any(h in text for h in SCANNED_HINTS)
                     return {"state": "qr", "mime": mime or "image/png", "image_base64": b64,
-                            "message": "请用小红书 App 扫码，并在手机上点「确认登录」"}
+                            "scanned": scanned,
+                            "message": ("已扫码成功 → 请在手机上点「确认登录」"
+                                        if scanned else
+                                        "请用小红书 App 扫码，并在手机上点「确认登录」")}
 
         # ④ 什么都没有：先**耐心等**（手机刚确认时弹窗会短暂消失，此时重载会打断登录），
         #    连续多轮都空才重新打开登录页。
@@ -489,6 +522,7 @@ class _LiveSession:
         out: Dict[str, Any] = {"state": self.last_state, "url": "", "title": "", "text": "",
                                "selectors": {}, "class_hints": [], "console": list(self._console),
                                "failed_requests": list(self._failed),
+                               "inputs": await self._visible_inputs(),
                                "web_session_changed": await self._cookie_login_detected(),
                                "image_base64": "", "mime": "image/png"}
         try:
@@ -519,6 +553,108 @@ class _LiveSession:
         except Exception as exc:
             out["error"] = str(exc)
         return out
+
+    async def _visible_inputs(self) -> List[Dict[str, Any]]:
+        """列出页面上可见的输入框（风控短信验证要往里填验证码，得先找到它）。"""
+        try:
+            return await self._page.evaluate("""() => {
+                return [...document.querySelectorAll('input')]
+                    .filter(el => el.offsetParent !== null || el.getClientRects().length > 0)
+                    .map(el => ({type: el.type || '', placeholder: el.placeholder || '',
+                                 name: el.name || '', id: el.id || '',
+                                 cls: (el.className && el.className.toString) ? el.className.toString() : '',
+                                 maxlength: el.maxLength}));
+            }""")
+        except Exception:
+            return []
+
+    async def _find_code_input(self):
+        """挑出"验证码输入框"：优先 placeholder/class 含验证码的，否则取最后一个可见输入框。
+
+        （手机号输入框通常在前面；验证码框排在它后面。）
+        """
+        candidates = [
+            "input[placeholder*='验证码']", "input[placeholder*='验证']",
+            "input[class*='captcha']", "input[name*='code']", "input[id*='code']",
+            "input[type='tel']", "input[type='text']",
+        ]
+        for sel in candidates:
+            try:
+                loc = self._page.locator(sel)
+                count = await loc.count()
+                for i in range(count - 1, -1, -1):          # 从后往前，验证码框一般在后
+                    item = loc.nth(i)
+                    if await item.is_visible():
+                        return item
+            except Exception:
+                continue
+        return None
+
+    async def submit_code(self, code: str) -> Dict[str, Any]:
+        """把短信验证码填进页面并提交（小红书风控要求时用）。"""
+        self.last_used = time.time()
+        code = (code or "").strip()
+        if not code:
+            return {"ok": False, "state": self.last_state, "message": "请先填写收到的验证码"}
+        try:
+            box = await self._find_code_input()
+            if box is None:
+                inputs = await self._visible_inputs()
+                return {"ok": False, "state": "verify_sms",
+                        "message": "页面上找不到验证码输入框，请在「登录诊断」里查看输入框信息",
+                        "inputs": inputs}
+            # 有些验证码是"一格一位"的多个输入框：位数对得上就逐格填
+            singles = [el for el in await self._visible_inputs()
+                       if el.get("maxlength") == 1]
+            if len(singles) >= 2 and len(singles) >= len(code):
+                boxes = self._page.locator("input[maxlength='1']")
+                total = await boxes.count()
+                for i, digit in enumerate(code):
+                    if i >= total:
+                        break
+                    await boxes.nth(i).fill(digit)
+                logger.info("按逐格方式填入验证码（%d 格）：user=%s", len(code), self.user_id)
+            else:
+                await box.click()
+                await box.fill(code)
+            # 提交：优先"验证/确定/提交/登录"按钮，否则直接回车
+            clicked = False
+            for label in ("验证", "确定", "提交", "登录", "确认"):
+                try:
+                    btn = self._page.get_by_role("button", name=re.compile(rf"^{label}$"))
+                    if await btn.count() > 0:
+                        await btn.first.click()
+                        clicked = True
+                        break
+                except Exception:
+                    continue
+            if not clicked:
+                try:
+                    await box.press("Enter")
+                except Exception:
+                    pass
+            await self._page.wait_for_timeout(3000)
+            data = await self._snapshot()
+            data["ok"] = True
+            data["submitted"] = True
+            return data
+        except Exception as exc:
+            logger.warning("提交短信验证码失败：user=%s %s", self.user_id, exc)
+            return {"ok": False, "state": "error", "message": f"提交验证码失败：{exc}"}
+
+    async def send_code(self) -> Dict[str, Any]:
+        """点一次「获取验证码」（有些流程不会自动发短信）。"""
+        self.last_used = time.time()
+        for label in ("获取验证码", "重新获取", "发送验证码"):
+            try:
+                btn = self._page.get_by_text(label, exact=False)
+                if await btn.count() > 0:
+                    await btn.first.click()
+                    await self._page.wait_for_timeout(1000)
+                    return {"ok": True, "message": f"已点击「{label}」，请注意手机短信"}
+            except Exception:
+                continue
+        return {"ok": False, "message": "页面上没找到「获取验证码」按钮"}
 
     async def refresh(self) -> Dict[str, Any]:
         """重新打开登录页拿一张新码。
@@ -663,6 +799,30 @@ def refresh(user_id: str) -> Dict[str, Any]:
     data = session.submit(session.refresh())
     data["ok"] = True
     return data
+
+
+def submit_code(user_id: str, code: str) -> Dict[str, Any]:
+    """把短信验证码提交进服务器那个浏览器（小红书风控要求时用）。"""
+    with _lock:
+        session = _sessions.get(user_id)
+    if session is None:
+        return {"ok": False, "state": "closed", "message": "登录会话已结束，请重新点「登录小红书」"}
+    data = session.submit(session.submit_code(code), timeout=180)
+    if data.get("state") == "logged_in":
+        _note_login_success(user_id)
+        with _lock:
+            _sessions.pop(user_id, None)
+        session.shutdown()
+    return data
+
+
+def send_code(user_id: str) -> Dict[str, Any]:
+    """点「获取验证码」，让短信再发一次。"""
+    with _lock:
+        session = _sessions.get(user_id)
+    if session is None:
+        return {"ok": False, "message": "登录会话已结束，请重新点「登录小红书」"}
+    return session.submit(session.send_code(), timeout=60)
 
 
 def debug(user_id: str, with_shot: bool = True) -> Dict[str, Any]:

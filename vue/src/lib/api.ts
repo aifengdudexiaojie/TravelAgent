@@ -366,6 +366,14 @@ export const xhsApi = {
   liveLoginDebug(shot = true): Promise<AxiosResponse> {
     return http.get('/xhs/login/debug', { params: shot ? { shot: 1 } : {}, timeout: 120000 })
   },
+  /** 提交短信验证码（小红书风控要求"短信验证码验证"时，必须由后端代填进服务器浏览器） */
+  liveLoginCode(code: string): Promise<AxiosResponse> {
+    return http.post('/xhs/login/code', { code }, { timeout: 180000 })
+  },
+  /** 重新发送短信验证码 */
+  liveLoginSendCode(): Promise<AxiosResponse> {
+    return http.post('/xhs/login/send-code', {}, { timeout: 60000 })
+  },
   /** 桌面环境备用：拉起登录程序弹浏览器扫码 */
   login(): Promise<AxiosResponse> {
     return http.post('/xhs/login/desktop')

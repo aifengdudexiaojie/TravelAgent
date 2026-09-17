@@ -50,6 +50,11 @@ const qrSeq = ref(0)                  // 第几张码（用来提示用户"这�
 const liveScreen = ref<any>(null)
 const screenLoading = ref(false)
 const showScreen = ref(false)
+/** 短信验证码（小红书风控要求时） */
+const smsCode = ref('')
+const smsPhone = ref('')
+const smsBusy = ref(false)
+const smsNotice = ref('')
 /** 缺系统运行库时的"服务器上一键修复"命令（后端装好依赖后为空） */
 const qrInstallHint = ref('')
 const copiedHint = ref('')
@@ -171,6 +176,9 @@ function resetQrState() {
   qrSeq.value = 0
   liveScreen.value = null
   showScreen.value = false
+  smsCode.value = ''
+  smsPhone.value = ''
+  smsNotice.value = ''
   slowRetry = 0
 }
 
@@ -203,6 +211,8 @@ function applyLive(data: any) {
   liveMode.value = true
   liveState.value = state
   liveNote.value = data.message || ''
+  smsPhone.value = data.phone || smsPhone.value
+  if (state !== 'verify_sms') smsNotice.value = ''
   if (data.image_base64) {
     qrImage.value = `data:${data.mime || 'image/png'};base64,${data.image_base64}`
     qrSeq.value += 1
@@ -240,6 +250,45 @@ async function fetchLiveScreen() {
     liveNote.value = apiErrorMessage(err, '读取服务器浏览器画面失败')
   } finally {
     screenLoading.value = false
+  }
+}
+
+/** 提交短信验证码：由后端填进**服务器那个浏览器**（风控这一步只能这么做） */
+async function submitSmsCode() {
+  const code = smsCode.value.trim()
+  if (!code) { smsNotice.value = '请先填写收到的验证码'; return }
+  smsBusy.value = true
+  smsNotice.value = ''
+  try {
+    const resp = await xhsApi.liveLoginCode(code)
+    const data = resp.data || {}
+    if (data.state === 'logged_in') {
+      smsNotice.value = '验证通过，登录成功！'
+      smsCode.value = ''
+      await refresh()
+      showQr.value = false
+      notice.value = '小红书登录成功'
+      return
+    }
+    smsNotice.value = data.message || '已提交，若未通过请检查验证码'
+    applyLive(data)
+  } catch (err: any) {
+    smsNotice.value = apiErrorMessage(err, '提交验证码失败')
+  } finally {
+    smsBusy.value = false
+  }
+}
+
+/** 重新发送短信验证码 */
+async function resendSmsCode() {
+  smsBusy.value = true
+  try {
+    const resp = await xhsApi.liveLoginSendCode()
+    smsNotice.value = resp.data?.message || '已请求重新发送验证码'
+  } catch (err: any) {
+    smsNotice.value = apiErrorMessage(err, '重新发送失败')
+  } finally {
+    smsBusy.value = false
   }
 }
 
@@ -535,6 +584,38 @@ onBeforeUnmount(() => {
             <b>小红书要求二次安全验证</b><br />
             请再扫上面这张码（这是新的验证码，不是刚才那张），完成后会自动变绿。
           </div>
+          <!-- ③ 风控短信验证：必须把验证码填进**服务器那个浏览器**，所以这里给输入框 -->
+          <div v-if="liveMode && liveState === 'verify_sms'"
+               class="mt-2 w-full rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 leading-relaxed">
+            <p class="font-medium text-center">小红书要求短信验证（风控）</p>
+            <p class="mt-1 text-center">
+              验证码已发到 <b>{{ smsPhone || '你绑定小红书账号的手机号' }}</b>，请填写下面的验证码完成登录。
+            </p>
+            <div class="mt-2 flex items-center gap-2">
+              <input v-model="smsCode" inputmode="numeric" maxlength="8"
+                     placeholder="输入短信验证码"
+                     class="flex-1 px-2 py-1.5 text-xs rounded-lg border border-amber-300 bg-white focus:outline-none focus:ring-1 focus:ring-amber-400"
+                     @keyup.enter="submitSmsCode" />
+              <button @click="submitSmsCode" :disabled="smsBusy"
+                      class="px-3 py-1.5 text-xs rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50">
+                {{ smsBusy ? '提交中…' : '提交验证码' }}
+              </button>
+            </div>
+            <div class="mt-2 flex items-center justify-between">
+              <button @click="resendSmsCode" :disabled="smsBusy" class="text-[11px] text-blue-600 hover:underline disabled:opacity-50">
+                没收到？重新发送验证码
+              </button>
+              <button @click="fetchLiveScreen" :disabled="screenLoading" class="text-[11px] text-blue-600 hover:underline disabled:opacity-50">
+                看服务器画面
+              </button>
+            </div>
+            <p v-if="smsNotice" class="mt-1 text-[11px] text-amber-800">{{ smsNotice }}</p>
+          </div>
+          <!-- 已扫码、等手机确认：明确告诉用户下一步，不要让他盯着二维码发呆 -->
+          <p v-if="liveMode && liveState === 'qr' && liveNote.includes('已扫码')"
+             class="mt-2 text-[11px] text-green-700 text-center">
+            ✅ 已扫码成功 —— 请在手机上点「确认登录」
+          </p>
           <p v-if="!liveMode && qrRemain !== null && qrImage" class="mt-1 text-xs text-center"
              :class="qrExpired ? 'text-amber-600' : 'text-gray-400'">
             {{ qrExpired

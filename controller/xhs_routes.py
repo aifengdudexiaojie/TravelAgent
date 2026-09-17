@@ -8,6 +8,9 @@
     POST /api/xhs/login/start     **网页扫码登录（推荐）**：服务器自己开浏览器，返回实时二维码
     GET  /api/xhs/login/probe     探测登录进度：每次返回**最新**二维码 / 二次验证码 / 已登录
     POST /api/xhs/login/refresh   换一张新二维码（安全：登录会话就是我们自己的浏览器）
+    POST /api/xhs/login/code      提交短信验证码（小红书风控要求"短信验证码验证"时用）
+    POST /api/xhs/login/send-code 重新发送短信验证码
+    GET  /api/xhs/login/debug     排错：看服务器那个浏览器此刻的画面与页面信息
     POST /api/xhs/login/stop      关闭登录浏览器
     POST /api/xhs/clear           退出登录（换号用；会删掉该用户的 cookies）
     POST /api/xhs/cookies         导入 cookies.json（备用方案）
@@ -34,6 +37,11 @@ router = APIRouter(prefix="/api/xhs", tags=["小红书 MCP"])
 class CookiesPayload(BaseModel):
     """cookies.json 的文本内容（前端 FileReader 读出来直接传，避免 multipart 依赖）。"""
     cookies: str
+
+
+class SmsCodePayload(BaseModel):
+    """小红书风控要求的短信验证码。"""
+    code: str
 
 
 @router.get("/status")
@@ -86,6 +94,28 @@ async def xhs_live_login_stop(current_user: dict = Depends(get_current_user)):
     import asyncio
 
     return await asyncio.to_thread(live_login.stop, current_user["user_id"])
+
+
+@router.post("/login/code")
+async def xhs_live_login_code(payload: SmsCodePayload,
+                              current_user: dict = Depends(get_current_user)):
+    """提交短信验证码。
+
+    实测：扫码后小红书的风控会要求"短信验证码验证"（验证码发到绑定手机号，HTTP 471）。
+    这一步必须**在服务器那个浏览器里输入**，所以由后端代填并提交。
+    """
+    import asyncio
+
+    return await asyncio.to_thread(live_login.submit_code,
+                                   current_user["user_id"], payload.code)
+
+
+@router.post("/login/send-code")
+async def xhs_live_login_send_code(current_user: dict = Depends(get_current_user)):
+    """点一次「获取验证码」（重新发送短信）。"""
+    import asyncio
+
+    return await asyncio.to_thread(live_login.send_code, current_user["user_id"])
 
 
 @router.get("/login/debug")

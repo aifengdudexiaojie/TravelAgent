@@ -31,12 +31,14 @@ class _FakeContext:
 class _FakePage:
     """按"选择器 → 出现次数 / src"返回假页面。"""
 
-    def __init__(self, present: set, srcs: dict, goto_ok=True):
+    def __init__(self, present: set, srcs: dict, goto_ok=True, text=""):
         self.present = present
         self.srcs = srcs
         self.goto_ok = goto_ok
+        self.text = text
         self.gotos = 0
         self.waits = 0
+        self.filled = []
 
     def locator(self, selector):
         page = self
@@ -49,6 +51,9 @@ class _FakePage:
 
     async def eval_on_selector(self, selector, _expr):
         return self.srcs.get(selector)
+
+    async def evaluate(self, _expr):
+        return self.text
 
     async def goto(self, *_a, **_k):
         self.gotos += 1
@@ -123,9 +128,51 @@ class SnapshotStateTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def _attach(self, present, srcs, cookies=None):
-        self.session._page = _FakePage(present, srcs)
+    def _attach(self, present, srcs, cookies=None, text=""):
+        self.session._page = _FakePage(present, srcs, text=text)
         self.session._ctx = _FakeContext(cookies or [])
+
+    # ---------- 风控中间态（实测：扫码成功后可能要求短信验证，HTTP 471） ----------
+    SMS_TEXT = ("登录后推荐更懂你的笔记 扫码成功 请在手机上确认 重新扫码 可用 小红书 或 微信 扫码 "
+                "手机号登录 +86 获取验证码 短信验证码验证 验证码将发送至 +86 133******32 "
+                "没有收到验证码？获取验证码 验证 问题反馈")
+
+    async def test_sms_verification_state_is_detected_with_phone(self):
+        self._attach({lb.QR_SEL}, {lb.QR_SEL: "data:image/png;base64,Q"}, text=self.SMS_TEXT)
+        data = await self.session._snapshot()
+        self.assertEqual(data["state"], "verify_sms")
+        self.assertEqual(data["phone"], "+86 133******32")
+        self.assertIn("短信验证", data["message"])
+
+    async def test_scanned_state_tells_user_to_confirm_on_phone(self):
+        text = "扫码成功 请在手机上确认 重新扫码 手机号登录"
+        self._attach({lb.QR_SEL}, {lb.QR_SEL: "data:image/png;base64,Q"}, text=text)
+        data = await self.session._snapshot()
+        self.assertEqual(data["state"], "qr")
+        self.assertTrue(data["scanned"])
+        self.assertIn("确认登录", data["message"])
+
+    async def test_submit_code_without_input_reports_inputs(self):
+        self._attach(set(), {}, text=self.SMS_TEXT)
+
+        async def _no_input():
+            return None
+
+        with patch.object(self.session, "_find_code_input", _no_input), \
+             patch.object(self.session, "_visible_inputs",
+                          lambda: __import__("asyncio").sleep(0, result=[{"placeholder": "验证码"}])):
+            data = await self.session.submit_code("123456")
+        self.assertFalse(data["ok"])
+        self.assertIn("找不到验证码输入框", data["message"])
+
+    async def test_submit_code_empty_is_rejected(self):
+        data = await self.session.submit_code("   ")
+        self.assertFalse(data["ok"])
+        self.assertIn("验证码", data["message"])
+
+    def test_sms_phone_extraction(self):
+        self.assertEqual(lb._LiveSession._sms_phone("发到 +86 133******32"), "+86 133******32")
+        self.assertEqual(lb._LiveSession._sms_phone("没有号码"), "")
 
     async def test_logged_in_writes_cookie_file(self):
         self._attach({lb.LOGIN_SEL}, {},
