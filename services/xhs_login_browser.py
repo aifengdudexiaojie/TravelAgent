@@ -72,6 +72,11 @@ def _resolve_headless() -> bool:
 MAX_SESSIONS = int(os.getenv("XHS_LOGIN_MAX_SESSIONS", "2"))
 IDLE_SECONDS = float(os.getenv("XHS_LOGIN_IDLE", "900"))
 NAV_TIMEOUT_MS = int(os.getenv("XHS_LOGIN_TIMEOUT_MS", "60000"))
+# 连续多少次探测"页面上什么都没有"之后，才重新打开登录页。
+# ⚠️ 不能急着重载：手机点下"确认登录"的一瞬间，页面上的二维码弹窗可能正好消失，
+# 这时若立刻重新加载，就会**打断正在进行中的登录** —— 用户看到的就是
+# "二维码一直在刷新、却永远登不上"。所以先等几轮，并顺便看 cookie 有没有换新。
+EMPTY_RELOAD_AFTER = int(os.getenv("XHS_LOGIN_RELOAD_AFTER", "6"))
 
 _sessions: Dict[str, "_LiveSession"] = {}
 _lock = threading.RLock()
@@ -230,6 +235,11 @@ class _LiveSession:
         self._browser = None
         self._ctx = None
         self._page = None
+        # 登录**成功**的硬信号：web_session 这个 cookie 被换成新的值。
+        # 只看 DOM 会在"页面还没刷新/弹窗刚关"时误判，cookie 变化才是真凭据。
+        self._session0: str = ""
+        self._empty_streak = 0
+        self.last_error = ""
 
     # ---------- 线程桥 ----------
     def submit(self, coro, timeout: float = 120):
@@ -271,6 +281,24 @@ class _LiveSession:
                 logger.warning("带入已有 cookies 失败（忽略）：%s", exc)
         self._page = await self._ctx.new_page()
         await self._goto_explore()
+        self._session0 = await self._web_session()      # 记录登录前的 web_session，用于对比
+
+    async def _web_session(self) -> str:
+        try:
+            cookies = await self._ctx.cookies()
+        except Exception:
+            return ""
+        for c in cookies or []:
+            if c.get("name") == "web_session":
+                return str(c.get("value") or "")
+        return ""
+
+    async def _cookie_login_detected(self) -> bool:
+        """web_session 从旧值变成了新值 —— 说明这次登录真的落地了。"""
+        if not self._session0:
+            return False
+        current = await self._web_session()
+        return bool(current) and current != self._session0
 
     async def _goto_explore(self) -> None:
         try:
@@ -302,47 +330,69 @@ class _LiveSession:
             return "", ""
         return match.group(1), match.group(2)
 
+    async def _save_and_report_login(self, why: str) -> Dict[str, Any]:
+        cookies = await self._ctx.cookies()
+        count = write_cookies(cookie_file(self.workdir), cookies)
+        logger.info("扫码登录成功（%s），已写入 cookies.json：user=%s n=%d",
+                    why, self.user_id, count)
+        return {"state": "logged_in", "cookie_count": count,
+                "message": f"登录成功（已保存登录态，判定依据：{why}）"}
+
     async def _snapshot(self, refresh_if_missing: bool = False) -> Dict[str, Any]:
         """看一眼当前状态：已登录 / 需要二次验证 / 有二维码 / 什么都没有。"""
+        # ① 已登录的两种证据：登录后的 DOM 元素，或 web_session 被换新
         if await self._count(LOGIN_SEL) > 0:
-            cookies = await self._ctx.cookies()
-            count = write_cookies(cookie_file(self.workdir), cookies)
-            logger.info("扫码登录成功，已写入 cookies.json：user=%s n=%d", self.user_id, count)
-            return {"state": "logged_in", "cookie_count": count,
-                    "message": "登录成功（已保存登录态）"}
+            return await self._save_and_report_login("页面已显示登录态")
+        if await self._cookie_login_detected():
+            self._empty_streak = 0
+            return await self._save_and_report_login("登录 cookie 已更新")
 
+        # ② 二次设备安全验证：小红书会弹出另一张要扫的码（上游 MCP 不处理这个）
         if await self._count(CAPTCHA_SEL) > 0:
+            self._empty_streak = 0
             mime, b64 = self._split_data_url(await self._qr_src(CAPTCHA_SEL) or "")
             return {"state": "verify", "mime": mime or "image/png", "image_base64": b64,
                     "message": "小红书要求二次安全验证：请再扫这张码"}
 
+        # ③ 常规登录二维码（实时读取，永远是当前这张）
         src = await self._qr_src(QR_SEL) if await self._count(QR_SEL) > 0 else None
-        if not src:
-            # 什么都没有：可能弹窗关了/过期了，也可能**手机已确认但页面 DOM 没刷新**。
-            # 重开一次登录页：若其实已登录，这时就能看到登录后的元素。
-            await self._goto_explore()
-            if await self._count(LOGIN_SEL) > 0:
-                cookies = await self._ctx.cookies()
-                count = write_cookies(cookie_file(self.workdir), cookies)
-                logger.info("重新加载后确认已登录，已写入 cookies.json：user=%s n=%d",
-                            self.user_id, count)
-                return {"state": "logged_in", "cookie_count": count,
-                        "message": "登录成功（已保存登录态）"}
-            src = await self._qr_src(QR_SEL) if await self._count(QR_SEL) > 0 else None
         if src:
+            self._empty_streak = 0
             mime, b64 = self._split_data_url(src)
             if b64:
                 return {"state": "qr", "mime": mime or "image/png", "image_base64": b64,
                         "message": "请用小红书 App 扫码，并在手机上点「确认登录」"}
 
-        return {"state": "waiting", "message": "等待二维码出现…（正在打开登录页）"}
+        # ④ 什么都没有：先**耐心等**（手机刚确认时弹窗会短暂消失，此时重载会打断登录），
+        #    连续多轮都空才重新打开登录页。
+        self._empty_streak += 1
+        if refresh_if_missing or self._empty_streak >= EMPTY_RELOAD_AFTER:
+            logger.info("页面没有二维码/登录元素（连续 %d 次），重新打开登录页：user=%s",
+                        self._empty_streak, self.user_id)
+            self._empty_streak = 0
+            await self._goto_explore()
+            if await self._count(LOGIN_SEL) > 0:
+                return await self._save_and_report_login("重载后页面显示已登录")
+            if await self._cookie_login_detected():
+                return await self._save_and_report_login("重载后登录 cookie 已更新")
+            src = await self._qr_src(QR_SEL) if await self._count(QR_SEL) > 0 else None
+            if src:
+                mime, b64 = self._split_data_url(src)
+                if b64:
+                    return {"state": "qr", "mime": mime or "image/png", "image_base64": b64,
+                            "message": "请用小红书 App 扫码，并在手机上点「确认登录」"}
+
+        return {"state": "waiting",
+                "message": "等待二维码出现…（如果手机已经确认，请稍等几秒，不要刷新页面）"}
 
     async def probe(self, refresh_if_missing: bool = False) -> Dict[str, Any]:
         self.last_used = time.time()
         try:
             data = await self._snapshot(refresh_if_missing=refresh_if_missing)
+            self.last_error = ""
         except Exception as exc:
             logger.warning("探测登录状态失败：user=%s %s", self.user_id, exc)
+            self.last_error = str(exc)
             data = {"state": "error", "message": f"浏览器操作失败：{exc}"}
         self.last_state = data.get("state", "")
         return data
@@ -410,7 +460,24 @@ def reap_idle() -> int:
 def active_sessions() -> List[Dict[str, Any]]:
     with _lock:
         return [{"user_id": s.user_id, "state": s.last_state,
-                 "age": round(time.time() - s.started_at, 1)} for s in _sessions.values()]
+                 "age": round(time.time() - s.started_at, 1),
+                 "error": s.last_error} for s in _sessions.values()]
+
+
+def diagnostics() -> Dict[str, Any]:
+    """给前端/排错用：环境 + 每个登录会话的现状。"""
+    avail = availability()
+    return {
+        **avail,
+        "headless": _resolve_headless(),
+        "display": os.environ.get("DISPLAY", ""),
+        "browser": browser_executable() or "",
+        "sessions": active_sessions(),
+        "max_sessions": MAX_SESSIONS,
+        "reload_after": EMPTY_RELOAD_AFTER,
+        "hint": ("" if avail["ok"] else
+                 "服务器未安装 playwright：cd /opt/travelagent && sudo bash deploy/install-xhs-login.sh"),
+    }
 
 
 def start(user_id: str) -> Dict[str, Any]:

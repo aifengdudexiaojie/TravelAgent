@@ -158,15 +158,40 @@ class SnapshotStateTest(unittest.IsolatedAsyncioTestCase):
         self._attach(set(), {})
         data = await self.session._snapshot(refresh_if_missing=True)
         self.assertEqual(data["state"], "waiting")
-        self.assertEqual(self.session._page.gotos, 1, "弹窗没了应该重新打开一次登录页")
+        self.assertEqual(self.session._page.gotos, 1, "显式要求时可以立刻重开登录页")
 
-    async def test_missing_qr_also_reopens_without_flag(self):
-        """手机上确认了、但页面 DOM 没刷新时：也必须重载一次才能判定已登录。"""
+    async def test_empty_page_waits_before_reloading(self):
+        """手机确认登录的瞬间弹窗会短暂消失 —— 这时**不能**急着重载，否则打断登录。"""
         self._attach(set(), {})
-        data = await self.session._snapshot(refresh_if_missing=False)
+        first = await self.session._snapshot(refresh_if_missing=False)
+        self.assertEqual(first["state"], "waiting")
+        self.assertEqual(self.session._page.gotos, 0, "第一次探测为空不应重载")
+        self.assertIn("不要刷新", first["message"])
+
+        with patch.object(lb, "EMPTY_RELOAD_AFTER", 3):
+            for _ in range(3):
+                await self.session._snapshot(refresh_if_missing=False)
+        self.assertEqual(self.session._page.gotos, 1, "连续多轮都空才重开登录页")
+
+    async def test_cookie_change_detects_login_without_dom(self):
+        """DOM 还没更新时，靠 web_session 换新也能判定登录成功。"""
+        self.session._page = _FakePage(set(), {})
+        self.session._ctx = _FakeContext([{"name": "web_session", "value": "NEWVALUE"}])
+        self.session._session0 = "OLDVALUE"
+        data = await self.session._snapshot()
+        self.assertEqual(data["state"], "logged_in")
+        self.assertEqual(data["cookie_count"], 1)
+        self.assertIn("cookie", data["message"])
+        saved = json.loads((self.dir / "cookies.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["cookies"][0]["value"], "NEWVALUE")
+
+    async def test_same_session_cookie_is_not_treated_as_login(self):
+        self.session._page = _FakePage(set(), {})
+        self.session._ctx = _FakeContext([{"name": "web_session", "value": "SAME"}])
+        self.session._session0 = "SAME"
+        with patch.object(lb, "EMPTY_RELOAD_AFTER", 99):
+            data = await self.session._snapshot()
         self.assertEqual(data["state"], "waiting")
-        self.assertEqual(self.session._page.gotos, 1)
-        self.assertIn("二维码", data["message"])
 
     async def test_page_error_becomes_error_state(self):
         self._attach({lb.QR_SEL}, {})          # 有元素但取不到 src，且不能重开

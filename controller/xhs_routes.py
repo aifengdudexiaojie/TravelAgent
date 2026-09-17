@@ -90,12 +90,10 @@ async def xhs_live_login_stop(current_user: dict = Depends(get_current_user)):
 
 @router.get("/login/available")
 async def xhs_live_login_available(current_user: dict = Depends(get_current_user)):
-    """网页扫码登录是否可用（不可用时前端退回 MCP 的静态二维码方案）。"""
+    """网页扫码登录是否可用 + 环境诊断（不可用时前端会退回 MCP 的静态二维码方案）。"""
     import asyncio
 
-    info = await asyncio.to_thread(live_login.availability)
-    info["sessions"] = await asyncio.to_thread(live_login.active_sessions)
-    return info
+    return await asyncio.to_thread(live_login.diagnostics)
 
 
 @router.get("/qrcode")

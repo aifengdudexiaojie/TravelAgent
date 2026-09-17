@@ -173,9 +173,11 @@ async function startLiveLogin() {
   try {
     const resp = await xhsApi.liveLoginStart()
     applyLive(resp.data || {})
-    return liveState.value !== 'unavailable'
+    // 只有 qr/verify/waiting/logged_in 才算这条链路可用；unavailable/error 时退回备用方案
+    return !['unavailable', 'error'].includes(liveState.value)
   } catch (err: any) {
     qrError.value = apiErrorMessage(err, '启动扫码登录失败')
+    liveNote.value = qrError.value
     return false
   }
 }
@@ -183,10 +185,13 @@ async function startLiveLogin() {
 /** 把后端返回的实时状态渲染出来；返回 true 表示这条链路可用 */
 function applyLive(data: any) {
   const state = data.state || ''
-  if (state === 'unavailable') {
+  if (state === 'unavailable' || state === 'error') {
+    // 实时链路不可用（没装 playwright / 浏览器起不来）：退回 MCP 备用方案，
+    // 但**原因必须显示出来**，否则用户只会觉得"怎么还是老样子、还是登不上"。
     liveMode.value = false
-    liveState.value = 'unavailable'
-    liveNote.value = data.message || '服务器未安装 playwright，已退回 MCP 二维码方案'
+    liveState.value = state
+    liveNote.value = data.message || '实时扫码登录不可用'
+    if (data.hint) liveNote.value += `\n${data.hint}`
     return false
   }
   liveMode.value = true
@@ -199,10 +204,6 @@ function applyLive(data: any) {
     qrError.value = ''
     qrExpiresAt.value = ''            // 实时链路没有"过期"概念：每次探测都是最新的码
     qrPending.value = false
-  }
-  if (state === 'error') {
-    qrError.value = data.message || '登录浏览器出错'
-    if (data.hint) qrError.value += `\n${data.hint}`
   }
   return true
 }
@@ -233,9 +234,20 @@ async function openQr() {
     }
     await handleClear(false)
   }
-  // 先试推荐路径（服务器自己开浏览器出实时码）；不可用再退回 MCP 的静态二维码
+  // 先查环境（把原因显示出来），再试推荐路径（服务器自己开浏览器出实时码）
+  fetchLiveDiag()
   const live = await startLiveLogin()
   if (!live) await fetchQr(true)
+}
+
+/** 环境诊断：实时链路为什么不可用（前端会显示出来，也方便远程排错） */
+async function fetchLiveDiag() {
+  try {
+    const resp = await xhsApi.liveLoginAvailable()
+    liveAvail.value = resp.data || null
+  } catch {
+    liveAvail.value = null
+  }
 }
 
 /** 取二维码：ok=出图；pending=实例启动中（继续轮询）；否则是硬失败
@@ -505,6 +517,11 @@ onBeforeUnmount(() => {
               ? '二维码已过期：请点下方「🔄 重新获取二维码」'
               : `二维码有效期剩余 ${qrRemain} 秒` }}
           </p>
+          <!-- 为什么没用推荐路径：原因必须显示，否则用户只会觉得"还是登不上" -->
+          <div v-if="!liveMode && liveNote" class="mt-2 w-full rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 whitespace-pre-wrap">
+            <b>当前用的是备用方案（MCP 静态二维码）</b><br />
+            {{ liveNote }}
+          </div>
           <p v-if="!liveMode && qrExpired && qrImage" class="mt-1 text-[11px] text-amber-600 text-center">
             重新获取会让刚才的扫码失效，请用新二维码再扫一次
           </p>
@@ -537,7 +554,11 @@ onBeforeUnmount(() => {
             {{ showDiag ? '收起登录诊断' : '登录诊断（MCP 状态 / 实例日志）' }}
           </button>
           <div v-if="showDiag" class="mt-1 rounded-lg bg-gray-50 border border-gray-100 p-2">
-            <p class="text-[10px] text-gray-500">MCP 返回：</p>
+            <p class="text-[10px] text-gray-500">实时扫码登录（推荐路径）环境：</p>
+            <pre class="text-[10px] text-gray-700 whitespace-pre-wrap break-all">{{ liveAvail
+              ? `可用=${liveAvail.ok} 有头=${!liveAvail.headless} DISPLAY=${liveAvail.display || '（无）'}\n浏览器=${liveAvail.browser || '（未找到）'}\n会话=${JSON.stringify(liveAvail.sessions || [])}`
+              : '（未获取）' }}</pre>
+            <p class="mt-2 text-[10px] text-gray-500">MCP 返回：</p>
             <pre class="text-[10px] text-gray-700 whitespace-pre-wrap break-all">{{ status?.raw || status?.message || '（暂无）' }}</pre>
             <template v-if="status?.log_tail">
               <p class="mt-2 text-[10px] text-gray-500">实例日志尾部（logs/xhs-mcp-*.log）：</p>
