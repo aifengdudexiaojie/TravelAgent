@@ -77,6 +77,9 @@ NAV_TIMEOUT_MS = int(os.getenv("XHS_LOGIN_TIMEOUT_MS", "60000"))
 # 这时若立刻重新加载，就会**打断正在进行中的登录** —— 用户看到的就是
 # "二维码一直在刷新、却永远登不上"。所以先等几轮，并顺便看 cookie 有没有换新。
 EMPTY_RELOAD_AFTER = int(os.getenv("XHS_LOGIN_RELOAD_AFTER", "6"))
+# 同一张二维码内容多久没变化就当作"废码"（页面停在"已失效"上）→ 重开登录页。
+# 小红书自己的码会轮换；一直不变说明它已经死了，用户再扫也没用。
+QR_STALE_AFTER = float(os.getenv("XHS_LOGIN_QR_STALE", "180"))
 
 _sessions: Dict[str, "_LiveSession"] = {}
 _lock = threading.RLock()
@@ -239,6 +242,10 @@ class _LiveSession:
         # 只看 DOM 会在"页面还没刷新/弹窗刚关"时误判，cookie 变化才是真凭据。
         self._session0: str = ""
         self._empty_streak = 0
+        # 同一张二维码内容多久没变就算"废码"（小红书自己的码会轮换；一直不变说明
+        # 页面停在"二维码已失效，点击刷新"那个状态，用户再扫也没用）→ 重开一次登录页
+        self._last_src = ""
+        self._last_src_at = 0.0
         self.last_error = ""
 
     # ---------- 线程桥 ----------
@@ -282,6 +289,8 @@ class _LiveSession:
         self._page = await self._ctx.new_page()
         await self._goto_explore()
         self._session0 = await self._web_session()      # 记录登录前的 web_session，用于对比
+        self._last_src = ""                             # 上一次看到的二维码内容
+        self._last_src_at = time.time()
 
     async def _web_session(self) -> str:
         try:
@@ -358,10 +367,22 @@ class _LiveSession:
         src = await self._qr_src(QR_SEL) if await self._count(QR_SEL) > 0 else None
         if src:
             self._empty_streak = 0
-            mime, b64 = self._split_data_url(src)
-            if b64:
-                return {"state": "qr", "mime": mime or "image/png", "image_base64": b64,
-                        "message": "请用小红书 App 扫码，并在手机上点「确认登录」"}
+            # 同一张内容长时间不变 = 页面停在"二维码已失效"那张废码上，重开一次
+            if src != self._last_src:
+                self._last_src, self._last_src_at = src, time.time()
+            elif time.time() - self._last_src_at > QR_STALE_AFTER:
+                logger.info("二维码内容 %ds 未变化，视为已失效，重新打开登录页：user=%s",
+                            int(QR_STALE_AFTER), self.user_id)
+                self._last_src, self._last_src_at = "", time.time()
+                await self._goto_explore()
+                if await self._cookie_login_detected():
+                    return await self._save_and_report_login("重载后登录 cookie 已更新")
+                src = await self._qr_src(QR_SEL) if await self._count(QR_SEL) > 0 else None
+            if src:
+                mime, b64 = self._split_data_url(src)
+                if b64:
+                    return {"state": "qr", "mime": mime or "image/png", "image_base64": b64,
+                            "message": "请用小红书 App 扫码，并在手机上点「确认登录」"}
 
         # ④ 什么都没有：先**耐心等**（手机刚确认时弹窗会短暂消失，此时重载会打断登录），
         #    连续多轮都空才重新打开登录页。
@@ -455,6 +476,12 @@ def reap_idle() -> int:
                 session.shutdown()
                 killed += 1
     return killed
+
+
+def session_active(user_id: str) -> bool:
+    """该用户是否正在进行"实时扫码登录"（供状态接口判断：进行中就别去打扰 MCP）。"""
+    with _lock:
+        return user_id in _sessions
 
 
 def active_sessions() -> List[Dict[str, Any]]:

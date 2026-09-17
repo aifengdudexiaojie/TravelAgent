@@ -739,6 +739,17 @@ class ScanQuietModeTest(_UsersDirCleanup, unittest.TestCase):
         self.assertTrue(info["waiting_scan"])
         self.assertIn("等待手机扫码", info["message"])
 
+    def test_status_skips_mcp_while_live_login_active(self):
+        """自建扫码登录进行中同样不能碰 MCP（每次调用都会新起 Chromium 抢资源）。"""
+        with patch("services.xhs_login_browser.session_active", return_value=True), \
+             patch("xiaohongshu_mcp_client._batch_call") as call:
+            info = xm.login_status(self.user)
+
+        call.assert_not_called()
+        self.assertTrue(info["waiting_scan"])
+        self.assertTrue(info["live_login"])
+        self.assertIn("扫码", info["message"])
+
     def test_scan_success_detected_from_cookie_file_without_mcp(self):
         self._issue_qr()
         # MCP 扫码成功后会把 cookies.json 重写（>500B）

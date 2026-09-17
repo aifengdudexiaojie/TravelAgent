@@ -193,6 +193,28 @@ class SnapshotStateTest(unittest.IsolatedAsyncioTestCase):
             data = await self.session._snapshot()
         self.assertEqual(data["state"], "waiting")
 
+    async def test_stale_qr_content_triggers_reload(self):
+        """同一张码长时间不变 = 页面停在"已失效"，要重开一次（否则用户干扫废码）。"""
+        self._attach({lb.QR_SEL}, {lb.QR_SEL: "data:image/png;base64,SAME"})
+        first = await self.session._snapshot()
+        self.assertEqual(first["state"], "qr")
+        self.assertEqual(self.session._page.gotos, 0)
+        self.session._last_src_at = time.time() - 10_000        # 装作很久没变
+        with patch.object(lb, "QR_STALE_AFTER", 60):
+            await self.session._snapshot()
+        self.assertEqual(self.session._page.gotos, 1, "废码应触发重开登录页")
+
+    async def test_fresh_qr_does_not_trigger_reload(self):
+        self._attach({lb.QR_SEL}, {lb.QR_SEL: "data:image/png;base64,SAME"})
+        await self.session._snapshot()
+        await self.session._snapshot()
+        self.assertEqual(self.session._page.gotos, 0)
+
+    def test_session_active_reports_membership(self):
+        with patch.dict(lb._sessions, {"u1": object()}, clear=True):
+            self.assertTrue(lb.session_active("u1"))
+            self.assertFalse(lb.session_active("u2"))
+
     async def test_page_error_becomes_error_state(self):
         self._attach({lb.QR_SEL}, {})          # 有元素但取不到 src，且不能重开
         data = await self.session._snapshot(refresh_if_missing=True)

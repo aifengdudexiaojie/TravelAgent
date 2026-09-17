@@ -982,6 +982,18 @@ def cached_status(user_id: str, max_age: float) -> Optional[Dict[str, Any]]:
     return payload
 
 
+def _live_login_active(user_id: str) -> bool:
+    """该用户是否正在进行"实时扫码登录"。
+
+    延迟导入避免循环依赖（xhs_login_browser 也会用到本模块的工具函数）。
+    """
+    try:
+        from services import xhs_login_browser
+        return xhs_login_browser.session_active(user_id)
+    except Exception:
+        return False
+
+
 def _remember_status(user_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """缓存状态探测结果（每次探测=一个 Chromium，必须节流）。"""
     _status_cache[_qr_cache_key(user_id)] = {"at": time.time(), "payload": dict(payload)}
@@ -1043,6 +1055,18 @@ def login_status(user_id: str) -> Dict[str, Any]:
             "scan_verdict": state["verdict"],
             "log_tail": instance_log_tail(user_id, lines=25),
             "message": "等待手机扫码并点「确认登录」…（扫码期间不查询 MCP，避免打扰登录）",
+        })
+        return info
+
+    # ---------- ①b 自建扫码登录进行中：同样不碰 MCP ----------
+    # （每次 MCP 调用都会新起一个 Chromium，会跟登录浏览器抢 CPU/内存；
+    #   登录结果由 xhs_login_browser 判定并写入 cookies 后回调 mark_logged_in）
+    if _live_login_active(user_id):
+        info.update({
+            "logged_in": False,
+            "waiting_scan": True,
+            "live_login": True,
+            "message": "服务器正在等你扫码确认…（推荐路径进行中，请勿刷新页面）",
         })
         return info
 

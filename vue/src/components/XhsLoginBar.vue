@@ -504,7 +504,11 @@ onBeforeUnmount(() => {
             打开小红书 App →「我」→ 右上角扫一扫
           </p>
           <p v-if="qrImage && liveMode" class="mt-1 text-[11px] text-gray-400 text-center">
-            这是第 {{ qrSeq }} 次读取的<b>最新</b>二维码（服务器实时读取，每 2.5 秒自动更新，不会扫到过期码）
+            这是第 {{ qrSeq }} 次读取的<b>最新</b>二维码（服务器只做"读取"，不会打断你的登录）
+          </p>
+          <p v-if="qrImage && liveMode" class="mt-1 text-[11px] text-gray-400 text-center">
+            二维码变化是小红书页面自己在轮换，属正常；<b>手机上确认后就不要再扫，等 5~10 秒</b>。
+            若手机提示「二维码已失效」，点下方「🔄 重新获取二维码」再扫一次即可。
           </p>
           <!-- ② 二次设备安全验证：把那张要扫的码给出来（上游 MCP 做不到这点） -->
           <div v-if="liveMode && liveState === 'verify'" class="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 text-center leading-relaxed">
