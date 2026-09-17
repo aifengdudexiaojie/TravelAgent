@@ -88,6 +88,19 @@ async def xhs_live_login_stop(current_user: dict = Depends(get_current_user)):
     return await asyncio.to_thread(live_login.stop, current_user["user_id"])
 
 
+@router.get("/login/debug")
+async def xhs_live_login_debug(shot: int = 1,
+                               current_user: dict = Depends(get_current_user)):
+    """排错：看**服务器上那个登录浏览器**此刻在显示什么（含截图与页面文本）。
+
+    用户说"手机上确认了却没反应"时，这个接口能直接说明问题：是二维码已失效、
+    还是小红书在要二次验证、还是页面报错。前端把它做进弹窗里一个按钮。
+    """
+    import asyncio
+
+    return await asyncio.to_thread(live_login.debug, current_user["user_id"], bool(shot))
+
+
 @router.get("/login/available")
 async def xhs_live_login_available(current_user: dict = Depends(get_current_user)):
     """网页扫码登录是否可用 + 环境诊断（不可用时前端会退回 MCP 的静态二维码方案）。"""

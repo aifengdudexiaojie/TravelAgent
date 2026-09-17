@@ -80,6 +80,10 @@ EMPTY_RELOAD_AFTER = int(os.getenv("XHS_LOGIN_RELOAD_AFTER", "6"))
 # 同一张二维码内容多久没变化就当作"废码"（页面停在"已失效"上）→ 重开登录页。
 # 小红书自己的码会轮换；一直不变说明它已经死了，用户再扫也没用。
 QR_STALE_AFTER = float(os.getenv("XHS_LOGIN_QR_STALE", "180"))
+# 扫码登录期间，每隔多少秒往日志里写一条"服务器浏览器此刻在显示什么"。
+# 用户报"手机上确认了但没反应"时，这条日志往往一句就能定位（例如屏上是
+# "二维码已失效" 还是 "安全验证"）。
+DIAG_EVERY = float(os.getenv("XHS_LOGIN_DIAG_EVERY", "30"))
 
 _sessions: Dict[str, "_LiveSession"] = {}
 _lock = threading.RLock()
@@ -246,6 +250,9 @@ class _LiveSession:
         # 页面停在"二维码已失效，点击刷新"那个状态，用户再扫也没用）→ 重开一次登录页
         self._last_src = ""
         self._last_src_at = 0.0
+        self._console: List[str] = []
+        self._failed: List[str] = []
+        self._last_diag_at = 0.0
         self.last_error = ""
 
     # ---------- 线程桥 ----------
@@ -268,6 +275,14 @@ class _LiveSession:
                 "--disable-blink-features=AutomationControlled",
                 "--lang=zh-CN",
                 "--window-size=1280,900",
+                # ⚠️ 关键：在 Xvfb 上没有窗口管理器时，Chrome 可能把窗口当成"被遮挡/后台"，
+                #    于是**节流页面 JS**；而小红书登录是靠页面脚本轮询/长连接拿扫码结果的，
+                #    被节流就会表现为"手机已确认、页面永远不动"。这几个 flag 关掉各种节流。
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling",
+                "--window-position=0,0",
             ],
         }
         if exe:
@@ -287,10 +302,29 @@ class _LiveSession:
             except Exception as exc:
                 logger.warning("带入已有 cookies 失败（忽略）：%s", exc)
         self._page = await self._ctx.new_page()
+        # 页面的 console / JS 报错也收下来：登录卡住时它们经常是唯一线索
+        try:
+            self._page.on("console", lambda msg: self._remember_console(f"{msg.type}: {msg.text}"))
+            self._page.on("pageerror", lambda exc: self._remember_console(f"pageerror: {exc}"))
+            # 记录加载失败的请求：如果登录回调依赖的请求被子网/代理拦掉，页面就永远
+            # 完不成登录（控制台里只会看到一句 ERR_BLOCKED_BY_CLIENT，看不出是哪个域名）
+            self._page.on("requestfailed",
+                          lambda req: self._remember_failed(
+                              f"{req.url[:160]} → {(req.failure or '失败')}"))
+        except Exception:
+            pass
         await self._goto_explore()
         self._session0 = await self._web_session()      # 记录登录前的 web_session，用于对比
         self._last_src = ""                             # 上一次看到的二维码内容
         self._last_src_at = time.time()
+
+    def _remember_console(self, line: str) -> None:
+        self._console.append(line[:300])
+        del self._console[:-30]                          # 只留最近 30 条
+
+    def _remember_failed(self, line: str) -> None:
+        self._failed.append(line[:220])
+        del self._failed[:-20]
 
     async def _web_session(self) -> str:
         try:
@@ -416,7 +450,75 @@ class _LiveSession:
             self.last_error = str(exc)
             data = {"state": "error", "message": f"浏览器操作失败：{exc}"}
         self.last_state = data.get("state", "")
+        if data.get("state") not in ("logged_in",):
+            await self._maybe_log_diag()
         return data
+
+    async def _maybe_log_diag(self) -> None:
+        """每隔 DIAG_EVERY 秒把"服务器浏览器此刻在显示什么"写进日志。
+
+        用户反馈"手机上确认了但没反应"时，这一行通常就能定位问题：
+        屏上是"二维码已失效"、还是"安全验证"、还是什么都没变。
+        """
+        now = time.time()
+        if now - self._last_diag_at < DIAG_EVERY:
+            return
+        self._last_diag_at = now
+        try:
+            url = self._page.url
+            title = await self._page.title()
+            text = await self._page.evaluate("() => document.body.innerText || ''")
+        except Exception as exc:
+            logger.info("页面诊断失败：user=%s %s", self.user_id, exc)
+            return
+        flat = re.sub(r"\s+", " ", (text or "")).strip()
+        console = " ⏐ ".join(self._console[-3:])[:300]
+        failed = " ⏐ ".join(self._failed[-3:])[:400]
+        logger.info("页面诊断：user=%s url=%s title=%r 二维码=%s 登录元素=%s 二次验证=%s 文本=%r 控制台=%r 加载失败=%r",
+                    self.user_id, url, title,
+                    await self._count(QR_SEL), await self._count(LOGIN_SEL),
+                    await self._count(CAPTCHA_SEL), flat[:300], console, failed)
+
+    async def debug_snapshot(self, with_shot: bool = True) -> Dict[str, Any]:
+        """给排错用的完整快照：页面在显示什么 + 截图。
+
+        之所以要有它：用户说"扫码没反应"时，只有看到**服务器那个浏览器**的画面，
+        才能判断是二维码失效、还是小红书在要二次验证、还是页面报错。
+        """
+        self.last_used = time.time()
+        out: Dict[str, Any] = {"state": self.last_state, "url": "", "title": "", "text": "",
+                               "selectors": {}, "class_hints": [], "console": list(self._console),
+                               "failed_requests": list(self._failed),
+                               "web_session_changed": await self._cookie_login_detected(),
+                               "image_base64": "", "mime": "image/png"}
+        try:
+            out["url"] = self._page.url
+            out["title"] = await self._page.title()
+            out["text"] = re.sub(r"\n{2,}", "\n",
+                                 (await self._page.evaluate("() => document.body.innerText || ''"))[:1500])
+            for name, sel in (("login", LOGIN_SEL), ("qrcode", QR_SEL), ("captcha", CAPTCHA_SEL),
+                              ("login_container", ".login-container"),
+                              ("captcha_modal", ".r-captcha-modal"),
+                              ("any_qrcode", ".qrcode-img"),
+                              ("expired_hint", "[class*=expired]")):
+                out["selectors"][name] = await self._count(sel)
+            out["class_hints"] = await self._page.evaluate("""() => {
+                const out = [];
+                for (const el of document.querySelectorAll('*')) {
+                    const c = (el.className && el.className.toString) ? el.className.toString() : '';
+                    if (/captcha|verify|expired|scan|qrcode|login/i.test(c)) {
+                        out.push(el.tagName.toLowerCase() + '.' + c.trim().slice(0, 80));
+                    }
+                    if (out.length >= 25) break;
+                }
+                return out;
+            }""")
+            if with_shot:
+                shot = await self._page.screenshot(type="png", full_page=False)
+                out["image_base64"] = base64.b64encode(shot).decode()
+        except Exception as exc:
+            out["error"] = str(exc)
+        return out
 
     async def refresh(self) -> Dict[str, Any]:
         """重新打开登录页拿一张新码。
@@ -560,6 +662,19 @@ def refresh(user_id: str) -> Dict[str, Any]:
         return start(user_id)
     data = session.submit(session.refresh())
     data["ok"] = True
+    return data
+
+
+def debug(user_id: str, with_shot: bool = True) -> Dict[str, Any]:
+    """排错：返回服务器上登录浏览器的画面与页面信息。"""
+    with _lock:
+        session = _sessions.get(user_id)
+    if session is None:
+        return {"ok": False, "state": "closed",
+                "message": "没有正在进行的登录会话（请先点「登录小红书」）"}
+    data = session.submit(session.debug_snapshot(with_shot=with_shot), timeout=120)
+    data["ok"] = True
+    data["headless"] = _resolve_headless()
     return data
 
 

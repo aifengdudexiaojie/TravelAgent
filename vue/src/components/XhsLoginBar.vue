@@ -46,6 +46,10 @@ const liveState = ref('')             // qr / verify / waiting / logged_in / una
 const liveNote = ref('')              // 后端给的状态说明
 const liveAvail = ref<any>(null)      // /login/available 的结果
 const qrSeq = ref(0)                  // 第几张码（用来提示用户"这是最新的一张"）
+/** 服务器浏览器画面快照（排错用） */
+const liveScreen = ref<any>(null)
+const screenLoading = ref(false)
+const showScreen = ref(false)
 /** 缺系统运行库时的"服务器上一键修复"命令（后端装好依赖后为空） */
 const qrInstallHint = ref('')
 const copiedHint = ref('')
@@ -165,6 +169,8 @@ function resetQrState() {
   liveState.value = ''
   liveNote.value = ''
   qrSeq.value = 0
+  liveScreen.value = null
+  showScreen.value = false
   slowRetry = 0
 }
 
@@ -220,6 +226,20 @@ async function probeLive() {
   } catch (err: any) {
     liveNote.value = apiErrorMessage(err, '登录状态探测失败')
     return true
+  }
+}
+
+/** 排错：把服务器上那个浏览器的画面抓回来看（扫码没反应时一键定位） */
+async function fetchLiveScreen() {
+  screenLoading.value = true
+  try {
+    const resp = await xhsApi.liveLoginDebug(true)
+    liveScreen.value = resp.data || null
+    showScreen.value = true
+  } catch (err: any) {
+    liveNote.value = apiErrorMessage(err, '读取服务器浏览器画面失败')
+  } finally {
+    screenLoading.value = false
   }
 }
 
@@ -585,7 +605,33 @@ onBeforeUnmount(() => {
           <pre class="mt-1 max-h-40 overflow-auto bg-white/70 text-[10px] text-gray-700 p-2 rounded whitespace-pre-wrap">{{ qrInstallHint }}</pre>
         </div>
 
-        <!-- 启动失败的日志尾部（排查用） -->
+          <!-- 服务器浏览器画面：扫码"没反应"时点这里，一眼看出服务端到底在显示什么 -->
+          <div v-if="liveMode && !loggedIn" class="mt-3 w-full">
+            <button
+              @click="fetchLiveScreen"
+              :disabled="screenLoading"
+              class="text-[11px] text-blue-600 hover:underline disabled:opacity-50"
+            >{{ screenLoading ? '读取中…' : (showScreen ? '🖥️ 刷新服务器浏览器画面' : '🖥️ 看看服务器浏览器现在显示什么（扫码没反应时点这里）') }}</button>
+            <div v-if="showScreen && liveScreen" class="mt-2 rounded-lg border border-gray-200 bg-gray-50 p-2">
+              <img v-if="liveScreen.image_base64" :src="`data:image/png;base64,${liveScreen.image_base64}`"
+                   alt="服务器浏览器画面" class="w-full rounded border border-gray-200" />
+              <p class="mt-1 text-[10px] text-gray-500 break-all">URL: {{ liveScreen.url }}</p>
+              <p class="text-[10px] text-gray-500">标题：{{ liveScreen.title }}</p>
+              <p class="text-[10px] text-gray-500">
+                元素：{{ JSON.stringify(liveScreen.selectors) }}
+                · web_session 已换新：{{ liveScreen.web_session_changed }}
+              </p>
+              <pre class="mt-1 max-h-32 overflow-auto text-[10px] text-gray-700 whitespace-pre-wrap break-all">{{ (liveScreen.text || '').slice(0, 600) }}</pre>
+              <template v-if="liveScreen.failed_requests?.length">
+                <p class="mt-1 text-[10px] text-gray-500">加载失败的请求（可能是导致登录卡住的原因）：</p>
+                <pre class="max-h-24 overflow-auto text-[10px] text-amber-700 whitespace-pre-wrap break-all">{{ liveScreen.failed_requests.join('\n') }}</pre>
+              </template>
+              <pre v-if="liveScreen.console?.length" class="mt-1 max-h-24 overflow-auto bg-gray-900 text-gray-200 text-[10px] p-2 rounded whitespace-pre-wrap">{{ liveScreen.console.join('\n') }}</pre>
+              <p v-if="liveScreen.error" class="mt-1 text-[10px] text-red-600">读取出错：{{ liveScreen.error }}</p>
+            </div>
+          </div>
+
+          <!-- 启动失败的日志尾部（排查用） -->
         <div v-if="qrLogTail" class="mt-3">
           <button @click="showLogTail = !showLogTail" class="text-[11px] text-blue-600 hover:underline">
             {{ showLogTail ? '收起实例日志' : '查看实例日志（排查用）' }}

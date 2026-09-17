@@ -362,6 +362,10 @@ export const xhsApi = {
   liveLoginAvailable(): Promise<AxiosResponse> {
     return http.get('/xhs/login/available')
   },
+  /** 排错：服务器上那个登录浏览器此刻的画面 + 页面文本/DOM 诊断 */
+  liveLoginDebug(shot = true): Promise<AxiosResponse> {
+    return http.get('/xhs/login/debug', { params: shot ? { shot: 1 } : {}, timeout: 120000 })
+  },
   /** 桌面环境备用：拉起登录程序弹浏览器扫码 */
   login(): Promise<AxiosResponse> {
     return http.post('/xhs/login/desktop')
