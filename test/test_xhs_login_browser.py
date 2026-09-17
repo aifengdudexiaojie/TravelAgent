@@ -286,10 +286,14 @@ class DesktopViewTest(unittest.TestCase):
              patch.object(lb, "HEADLESS_ENV", "auto"):
             data = lb.desktop_view()
         self.assertTrue(data["available"])
+        self.assertTrue(data["lite"], "vnc_lite 存在时应标记为可用纯净画面")
         self.assertIn("/vnc/vnc.html", data["view_path"])
-        self.assertIn("websockify", data["view_path"])
-        self.assertEqual(data["hint"], "")
-        self.assertEqual(data["warning"], "")
+        self.assertIn("/vnc/vnc_lite.html", data["lite_path"])
+        # noVNC 的 path 是相对当前页面解析的，所以这里必须是 websockify（不能带 /vnc 前缀）
+        self.assertIn("path=websockify", data["view_path"])
+        self.assertIn("path=websockify", data["lite_path"])
+        self.assertIn("autoconnect=1", data["view_path"])
+        self.assertIn("resize=scale", data["view_path"])
 
     def test_reports_install_hint_when_unreachable(self):
         with patch("httpx.get", side_effect=RuntimeError("refused")), \
@@ -318,7 +322,8 @@ class DesktopViewTest(unittest.TestCase):
              patch.dict("os.environ", {"DISPLAY": ":99"}):
             lb.desktop_view()
             lb.desktop_view()
-        self.assertEqual(get.call_count, 1, "前端会频繁查，必须缓存")
+        # 第一次会探两个页面（vnc.html / vnc_lite.html），第二次走缓存不再探
+        self.assertEqual(get.call_count, 2, "前端会频繁查，必须缓存")
 
 
 class AvailabilityTest(unittest.TestCase):

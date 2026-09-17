@@ -55,12 +55,15 @@ const smsCode = ref('')
 const smsPhone = ref('')
 const smsBusy = ref(false)
 const smsNotice = ref('')
-/** 服务器浏览器投屏（noVNC）：在小框里直接操作服务器上的 Chrome */
+/** 服务器浏览器投屏（noVNC）：它就是登录界面本身（扫码/短信验证都在里面完成） */
 const desk = ref<any>(null)
 const deskFrameUrl = ref('')
 const deskLocalUrl = ref('')
 const deskTunnel = ref('')
 const deskLoading = ref(false)
+const deskLite = ref(false)          // true=纯净画面（vnc_lite），false=带缩放的自适应画面
+/** 投屏可用时，二维码方式收进折叠区（默认不展开） */
+const showQrFallback = ref(false)
 /** 缺系统运行库时的"服务器上一键修复"命令（后端装好依赖后为空） */
 const qrInstallHint = ref('')
 const copiedHint = ref('')
@@ -307,8 +310,10 @@ async function prepareDesktop() {
     desk.value = d
     const origin = window.location.origin
     const host = window.location.hostname
-    deskFrameUrl.value = `${origin}${d.view_path || ''}`
-    deskLocalUrl.value = `http://localhost:${d.port || 6080}${d.local_path || ''}`
+    const path = deskLite.value ? d.lite_path : d.view_path
+    deskFrameUrl.value = `${origin}${path || ''}`
+    const localPath = deskLite.value ? d.local_lite_path : d.local_path
+    deskLocalUrl.value = `http://localhost:${d.port || 6080}${localPath || ''}`
     deskTunnel.value = `ssh -L ${d.port || 6080}:127.0.0.1:${d.port || 6080} travelagent@${host}`
   } catch (err: any) {
     desk.value = { available: false, hint: apiErrorMessage(err, '读取投屏状态失败') }
@@ -317,9 +322,19 @@ async function prepareDesktop() {
   }
 }
 
-function openDesktopWindow() {
-  if (deskFrameUrl.value) window.open(deskFrameUrl.value, '_blank', 'width=1200,height=820')
+/** 切"自适应缩放 / 纯净画面" */
+async function toggleDeskLite() {
+  deskLite.value = !deskLite.value
+  await prepareDesktop()
 }
+
+function openDesktopWindow() {
+  if (deskFrameUrl.value) window.open(deskFrameUrl.value, '_blank', 'width=1280,height=900')
+}
+
+/** 投屏可用且不是无头模式 → 弹窗就用投屏当登录界面 */
+const deskPrimary = computed(() =>
+  !!(desk.value?.available && !desk.value?.warning))
 
 async function openQr() {
   showQr.value = true
@@ -334,6 +349,7 @@ async function openQr() {
   }
   // 先查环境（把原因显示出来），再试推荐路径（服务器自己开浏览器出实时码）
   fetchLiveDiag()
+  await prepareDesktop()
   const live = await startLiveLogin()
   if (!live) await fetchQr(true)
 }
@@ -566,18 +582,97 @@ onBeforeUnmount(() => {
     <p v-if="notice" class="text-[11px] text-green-700 max-w-[640px] text-right">{{ notice }}</p>
     <p v-if="error && !hint" class="text-[11px] text-red-600 max-w-[640px] text-right whitespace-pre-wrap">{{ error }}</p>
 
-    <!-- 扫码登录弹窗 -->
+    <!-- 登录弹窗：投屏可用时，**这个框就是服务器上的浏览器**（扫码/短信验证都在里面完成） -->
     <div
       v-if="showQr"
       class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
       @click.self="closeQr"
     >
-      <div class="bg-white rounded-2xl w-full max-w-sm p-5 text-left">
+      <div class="bg-white rounded-2xl w-full p-5 text-left"
+           :class="deskPrimary ? 'max-w-5xl' : 'max-w-sm'">
         <div class="flex items-start justify-between mb-3">
-          <h3 class="text-base font-bold text-gray-800">📱 用小红书 App 扫码登录</h3>
+          <h3 class="text-base font-bold text-gray-800">
+            {{ deskPrimary ? '🖥️ 小红书登录（这里是服务器上的浏览器，直接操作即可）' : '📱 用小红书 App 扫码登录' }}
+          </h3>
           <button @click="closeQr" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
         </div>
 
+        <!-- ================= 主路径：服务器浏览器画面 ================= -->
+        <template v-if="deskPrimary">
+          <p class="text-xs text-gray-500 mb-2">
+            用小红书 App 扫码 → 手机上点「确认登录」；如果小红书要求<b>短信验证码/滑块</b>，
+            直接在这一屏里输入即可。登录成功后会自动变绿。
+          </p>
+          <div class="flex items-center gap-2 mb-2">
+            <button @click="openDesktopWindow"
+                    class="px-3 py-1.5 text-xs rounded-lg bg-blue-600 text-white hover:bg-blue-700">
+              ⛶ 在新窗口打开（大屏更好扫）
+            </button>
+            <button @click="toggleDeskLite"
+                    class="px-3 py-1.5 text-xs rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-50">
+              {{ deskLite ? '↔ 切换到自适应缩放' : '🖼 切换到纯净画面' }}
+            </button>
+            <button @click="prepareDesktop" :disabled="deskLoading"
+                    class="px-3 py-1.5 text-xs rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+              {{ deskLoading ? '加载中…' : '重新连接' }}
+            </button>
+            <span v-if="desk?.display" class="text-[10px] text-gray-400">DISPLAY={{ desk.display }}</span>
+          </div>
+          <iframe :src="deskFrameUrl" class="w-full rounded-xl border border-gray-200 bg-gray-900"
+                  style="height: 62vh" allow="clipboard-read; clipboard-write"></iframe>
+          <p class="mt-2 text-[11px] text-gray-400">
+            框里看不到画面？① 先在框里等 2~3 秒（正在连接）；② 若仍是空白，多半是 nginx 还没放行
+            <code>/vnc/</code>，展开下面的「命令行方式」用 SSH 隧道即可。
+          </p>
+          <details class="mt-1">
+            <summary class="text-[11px] text-gray-500 cursor-pointer">框里打不开？用命令行方式（零配置）</summary>
+            <div class="mt-1 text-[11px] text-gray-700">
+              <p>在你自己的电脑上执行：</p>
+              <pre class="mt-1 bg-gray-50 border border-gray-200 rounded p-2 whitespace-pre-wrap break-all">{{ deskTunnel }}</pre>
+              <p class="mt-1">然后浏览器打开：</p>
+              <pre class="mt-1 bg-gray-50 border border-gray-200 rounded p-2 whitespace-pre-wrap break-all">{{ deskLocalUrl }}</pre>
+            </div>
+          </details>
+          <p v-if="desk?.warning" class="mt-2 text-[11px] text-amber-800 whitespace-pre-wrap">{{ desk.warning }}</p>
+          <p v-if="desk?.hint" class="mt-2 text-[11px] text-amber-800 whitespace-pre-wrap">{{ desk.hint }}</p>
+
+          <!-- 二维码方式：投屏可用时收进折叠区（有些人更喜欢扫码） -->
+          <div class="mt-3">
+            <button @click="showQrFallback = !showQrFallback" class="text-[11px] text-blue-600 hover:underline">
+              {{ showQrFallback ? '收起' : '不想用远程桌面？改用二维码方式' }}
+            </button>
+            <div v-if="showQrFallback" class="mt-2 flex flex-col items-center rounded-xl border border-gray-100 bg-gray-50 py-3">
+              <div class="w-48 h-48 border border-gray-100 rounded-xl flex items-center justify-center bg-white overflow-hidden">
+                <img v-if="qrImage" :src="qrImage" alt="登录二维码" class="w-full h-full object-contain" />
+                <span v-else class="text-xs text-gray-400 px-4 text-center">正在获取二维码…</span>
+              </div>
+              <p class="mt-2 text-[11px] text-gray-500">这是第 {{ qrSeq }} 次读取的最新二维码</p>
+              <button @click="refreshQr" :disabled="fetchingQr"
+                      class="mt-2 px-3 py-1.5 text-xs rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+                {{ fetchingQr ? '获取中…' : '🔄 重新获取二维码' }}
+              </button>
+              <p v-if="liveNote" class="mt-1 text-[11px] text-gray-500 text-center px-3">{{ liveNote }}</p>
+              <!-- 风控短信验证：也可以在这里代填（不想在远程画面里打字时） -->
+              <div v-if="liveState === 'verify_sms'" class="mt-2 w-full px-3">
+                <p class="text-[11px] text-amber-800 text-center">
+                  小红书要求短信验证：验证码已发到 <b>{{ smsPhone || '绑定手机号' }}</b>
+                </p>
+                <div class="mt-1 flex items-center gap-2">
+                  <input v-model="smsCode" inputmode="numeric" maxlength="8" placeholder="输入短信验证码"
+                         class="flex-1 px-2 py-1.5 text-xs rounded-lg border border-amber-300 bg-white" @keyup.enter="submitSmsCode" />
+                  <button @click="submitSmsCode" :disabled="smsBusy"
+                          class="px-3 py-1.5 text-xs rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50">
+                    {{ smsBusy ? '提交中…' : '提交' }}
+                  </button>
+                </div>
+                <p v-if="smsNotice" class="mt-1 text-[11px] text-amber-800 text-center">{{ smsNotice }}</p>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- ================= 备用：二维码为主（没装投屏时） ================= -->
+        <template v-else>
         <div class="flex flex-col items-center">
           <div class="w-56 h-56 border border-gray-100 rounded-xl flex items-center justify-center bg-gray-50 overflow-hidden">
             <!-- ① 出图 -->
@@ -721,7 +816,7 @@ onBeforeUnmount(() => {
               @click="fetchLiveScreen"
               :disabled="screenLoading"
               class="text-[11px] text-blue-600 hover:underline disabled:opacity-50"
-            >{{ screenLoading ? '读取中…' : (showScreen ? '🖥️ 刷新服务器浏览器画面' : '🖥️ 看看服务器浏览器现在显示什么（扫码没反应时点这里）') }}</button>
+            >{{ screenLoading ? '读取中…' : (showScreen ? '🖥️ 刷新服务器浏览器画面（静态截图）' : '🖥️ 抓一张服务器浏览器当前画面（排错用）') }}</button>
             <div v-if="showScreen && liveScreen" class="mt-2 rounded-lg border border-gray-200 bg-gray-50 p-2">
               <img v-if="liveScreen.image_base64" :src="`data:image/png;base64,${liveScreen.image_base64}`"
                    alt="服务器浏览器画面" class="w-full rounded border border-gray-200" />
@@ -741,43 +836,11 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- 🖥️ 服务器浏览器投屏：直接在这个小框里操作服务器上的 Chrome -->
-          <div v-if="showQr" class="mt-3 w-full rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
-            <div class="flex items-center justify-between gap-2">
-              <span class="text-[11px] font-medium text-blue-800">
-                🖥️ 也可以直接操作服务器上的浏览器（扫码、短信验证都能自己完成）
-              </span>
-              <button v-if="!desk" @click="prepareDesktop" :disabled="deskLoading"
-                      class="shrink-0 text-[11px] text-blue-700 hover:underline disabled:opacity-50">
-                {{ deskLoading ? '准备中…' : '展开' }}
-              </button>
-            </div>
-
-            <template v-if="desk">
-              <p v-if="desk.hint" class="mt-1 text-[11px] text-amber-800 whitespace-pre-wrap">{{ desk.hint }}</p>
-              <p v-if="desk.warning" class="mt-1 text-[11px] text-amber-800 whitespace-pre-wrap">{{ desk.warning }}</p>
-              <template v-if="desk.available && !desk.warning">
-                <iframe :src="deskFrameUrl" class="mt-2 w-full h-72 rounded border border-blue-200 bg-white"
-                        allow="clipboard-read; clipboard-write"></iframe>
-                <p class="mt-1 text-[10px] text-gray-500">
-                  框里就是服务器上的 Chrome：先点里面的「连接」，然后用小红书 App 扫码；
-                  若要求短信验证码/滑块，直接在这里输入即可。登录成功后状态灯会自动变绿。
-                </p>
-                <div class="mt-1 flex flex-wrap items-center gap-3">
-                  <button @click="openDesktopWindow" class="text-[11px] text-blue-700 hover:underline">在新窗口打开</button>
-                  <button @click="prepareDesktop" class="text-[11px] text-blue-700 hover:underline">重新加载</button>
-                </div>
-                <details class="mt-2">
-                  <summary class="text-[11px] text-gray-500 cursor-pointer">上面这个框打不开？（用 SSH 隧道，零配置）</summary>
-                  <div class="mt-1 text-[11px] text-gray-700">
-                    <p>在你自己的电脑上执行：</p>
-                    <pre class="mt-1 bg-white border border-gray-200 rounded p-2 whitespace-pre-wrap break-all">{{ deskTunnel }}</pre>
-                    <p class="mt-1">然后浏览器打开：</p>
-                    <pre class="mt-1 bg-white border border-gray-200 rounded p-2 whitespace-pre-wrap break-all">{{ deskLocalUrl }}</pre>
-                  </div>
-                </details>
-              </template>
-            </template>
+          <!-- 没装投屏时的提示：装上就能"直接操作服务器浏览器" -->
+          <div v-if="desk && !deskPrimary" class="mt-3 w-full rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+            <p class="text-[11px] font-medium text-blue-800">🖥️ 想让扫码/短信验证更省心？装一次投屏即可（在网页里直接操作服务器浏览器）</p>
+            <p v-if="desk.hint" class="mt-1 text-[11px] text-amber-800 whitespace-pre-wrap">{{ desk.hint }}</p>
+            <p v-if="desk.warning" class="mt-1 text-[11px] text-amber-800 whitespace-pre-wrap">{{ desk.warning }}</p>
           </div>
 
           <!-- 启动失败的日志尾部（排查用） -->
@@ -825,6 +888,7 @@ onBeforeUnmount(() => {
           </template>
           登录状态只保存在你自己的账号目录里，与其他用户互不影响；同一个账号不要同时在别处登录网页版。
         </p>
+        </template>
       </div>
     </div>
   </div>

@@ -745,25 +745,36 @@ def desktop_view() -> Dict[str, Any]:
         return dict(_desktop_cache["data"])
 
     port = int(os.getenv("XHS_VNC_WEB_PORT", "6080"))
-    probe_url = f"http://127.0.0.1:{port}/vnc.html"
     reachable = False
+    has_lite = False
     try:
         import httpx
-        reachable = httpx.get(probe_url, timeout=3).status_code < 500
+        r = httpx.get(f"http://127.0.0.1:{port}/vnc.html", timeout=3)
+        reachable = r.status_code < 500
+        has_lite = httpx.get(f"http://127.0.0.1:{port}/vnc_lite.html",
+                             timeout=3).status_code == 200
     except Exception:
         reachable = False
 
     display = os.environ.get("DISPLAY", "")
     headless = _resolve_headless()
-    query = "autoconnect=1&resize=scale&path=websockify"
+    # noVNC 的 path 是**相对当前页面**解析的（vnc_lite.html: new URL(path, location.href)），
+    # 所以挂在 /vnc/ 下时 path=websockify 正好映射到 /vnc/websockify；直连 6080 时同理。
+    # vnc.html 带工具栏但支持 resize=scale（自动缩放铺满，小框里更好用）；
+    # vnc_lite.html 是纯净画面（无工具栏），但不缩放。
+    scale_q = "autoconnect=1&resize=scale&path=websockify"
+    lite_q = "path=websockify"
     data = {
         "ok": True,
         "available": reachable,
+        "lite": has_lite,
         "port": port,
         "display": display,
         "headless": headless,
-        "view_path": f"/vnc/vnc.html?{query}",          # 走站点域名（需 nginx 片段）
-        "local_path": f"/vnc.html?{query}",             # 走 SSH 隧道时的本机地址
+        "view_path": f"/vnc/vnc.html?{scale_q}",                 # 走站点域名（需 nginx 片段）
+        "lite_path": f"/vnc/vnc_lite.html?{lite_q}",
+        "local_path": f"/vnc.html?{scale_q}",                    # 走 SSH 隧道时的本机地址
+        "local_lite_path": f"/vnc_lite.html?{lite_q}",
         "hint": ("" if reachable else
                  "服务器还没装投屏：cd /opt/travelagent && sudo bash deploy/install-xhs-vnc.sh"),
         "warning": ("" if (display and not headless) else
