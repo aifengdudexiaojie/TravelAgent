@@ -684,6 +684,16 @@ onBeforeUnmount(() => {
             框里看不到画面？① 先在框里等 2~3 秒（正在连接）；② 若仍是空白，多半是 nginx 还没放行
             <code>/vnc/</code>，展开下面的「命令行方式」用 SSH 隧道即可。
           </p>
+          <!-- 走站点域名时 nginx 会弹用户名/密码（保护这个远程桌面），提前说清楚 -->
+          <p class="mt-1 text-[11px] text-gray-500">
+            框里如果弹出<b>用户名/密码</b>对话框：这是 nginx 给远程桌面加的保护，
+            用户名 <b>{{ desk?.auth_user || 'admin' }}</b>，口令就是 `install-xhs-vnc.sh` 最后打印的那串
+            （脚本默认复用 <code>.env</code> 里的 <code>LOG_VIEWER_PASSWORD</code>）。
+            浏览器提示"不是私密连接"是因为站点是 http，属正常。
+            <button @click="useLocalDesktop" class="text-blue-600 hover:underline">
+              不想输口令？改用本机隧道地址
+            </button>
+          </p>
           <details class="mt-1">
             <summary class="text-[11px] text-gray-500 cursor-pointer">框里打不开？用命令行方式（零配置）</summary>
             <div class="mt-1 text-[11px] text-gray-700">

@@ -771,6 +771,9 @@ def desktop_view() -> Dict[str, Any]:
         "port": port,
         "display": display,
         "headless": headless,
+        # 走站点域名时 nginx 会弹"用户名/密码"（保护远程桌面）；口令不在这里返回，
+        # 只告诉前端用户名，口令在安装脚本输出里 / .env 的 LOG_VIEWER_PASSWORD。
+        "auth_user": os.getenv("XHS_VNC_USER", "admin"),
         "view_path": f"/vnc/vnc.html?{scale_q}",                 # 走站点域名（需 nginx 片段）
         "lite_path": f"/vnc/vnc_lite.html?{lite_q}",
         "local_path": f"/vnc.html?{scale_q}",                    # 走 SSH 隧道时的本机地址
