@@ -358,6 +358,10 @@ export const xhsApi = {
   liveLoginStop(): Promise<AxiosResponse> {
     return http.post('/xhs/login/stop')
   },
+  /** 服务器浏览器能否"投屏"过来直接操作（noVNC）：拿到地址由前端拼站点域名 */
+  liveLoginDesktopView(): Promise<AxiosResponse> {
+    return http.get('/xhs/login/desktop-view')
+  },
   /** 网页扫码登录是否可用（不可用则退回 MCP 静态二维码） */
   liveLoginAvailable(): Promise<AxiosResponse> {
     return http.get('/xhs/login/available')

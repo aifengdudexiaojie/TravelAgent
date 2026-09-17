@@ -268,6 +268,59 @@ class SnapshotStateTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(data["state"], ("waiting", "error"))
 
 
+class DesktopViewTest(unittest.TestCase):
+    """投屏（noVNC）可用性判断：装了就给出地址，没装就给出安装命令。"""
+
+    def setUp(self):
+        lb._desktop_cache.update({"at": 0.0, "data": None})
+
+    def tearDown(self):
+        lb._desktop_cache.update({"at": 0.0, "data": None})
+
+    def test_available_when_novnc_responds(self):
+        class _Resp:
+            status_code = 200
+
+        with patch("httpx.get", return_value=_Resp()), \
+             patch.dict("os.environ", {"DISPLAY": ":99"}), \
+             patch.object(lb, "HEADLESS_ENV", "auto"):
+            data = lb.desktop_view()
+        self.assertTrue(data["available"])
+        self.assertIn("/vnc/vnc.html", data["view_path"])
+        self.assertIn("websockify", data["view_path"])
+        self.assertEqual(data["hint"], "")
+        self.assertEqual(data["warning"], "")
+
+    def test_reports_install_hint_when_unreachable(self):
+        with patch("httpx.get", side_effect=RuntimeError("refused")), \
+             patch.dict("os.environ", {"DISPLAY": ":99"}):
+            data = lb.desktop_view()
+        self.assertFalse(data["available"])
+        self.assertIn("install-xhs-vnc.sh", data["hint"])
+
+    def test_warns_when_backend_has_no_display(self):
+        """后端若没跑在虚拟显示上，投屏里看不到浏览器窗口，必须提前警告。"""
+        class _Resp:
+            status_code = 200
+
+        with patch("httpx.get", return_value=_Resp()), \
+             patch.dict("os.environ", {}, clear=True), \
+             patch.object(lb, "HEADLESS_ENV", "true"):
+            data = lb.desktop_view()
+        self.assertTrue(data["available"])
+        self.assertIn("DISPLAY", data["warning"])
+
+    def test_result_is_cached_briefly(self):
+        class _Resp:
+            status_code = 200
+
+        with patch("httpx.get", return_value=_Resp()) as get, \
+             patch.dict("os.environ", {"DISPLAY": ":99"}):
+            lb.desktop_view()
+            lb.desktop_view()
+        self.assertEqual(get.call_count, 1, "前端会频繁查，必须缓存")
+
+
 class AvailabilityTest(unittest.TestCase):
     def test_reports_ok_when_playwright_installed(self):
         with patch.object(lb, "_availability", None):

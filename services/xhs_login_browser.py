@@ -729,8 +729,53 @@ def active_sessions() -> List[Dict[str, Any]]:
                  "error": s.last_error} for s in _sessions.values()]
 
 
+_desktop_cache: Dict[str, Any] = {"at": 0.0, "data": None}
+
+
+def desktop_view() -> Dict[str, Any]:
+    """服务器上的浏览器能否"投屏"到用户浏览器里操作（noVNC）。
+
+    为什么要有这条路：小红书登录不只是扫码——风控可能要求短信验证码、滑块、点确认，
+    这些只有人看着真实浏览器才能完成。把 Xvfb 上的画面投出来，用户自己操作最稳。
+
+    返回里的 view_path 由前端拼上自己的站点地址使用（后端不知道对外域名）。
+    """
+    now = time.time()
+    if _desktop_cache["data"] and now - _desktop_cache["at"] < 30:
+        return dict(_desktop_cache["data"])
+
+    port = int(os.getenv("XHS_VNC_WEB_PORT", "6080"))
+    probe_url = f"http://127.0.0.1:{port}/vnc.html"
+    reachable = False
+    try:
+        import httpx
+        reachable = httpx.get(probe_url, timeout=3).status_code < 500
+    except Exception:
+        reachable = False
+
+    display = os.environ.get("DISPLAY", "")
+    headless = _resolve_headless()
+    query = "autoconnect=1&resize=scale&path=websockify"
+    data = {
+        "ok": True,
+        "available": reachable,
+        "port": port,
+        "display": display,
+        "headless": headless,
+        "view_path": f"/vnc/vnc.html?{query}",          # 走站点域名（需 nginx 片段）
+        "local_path": f"/vnc.html?{query}",             # 走 SSH 隧道时的本机地址
+        "hint": ("" if reachable else
+                 "服务器还没装投屏：cd /opt/travelagent && sudo bash deploy/install-xhs-vnc.sh"),
+        "warning": ("" if (display and not headless) else
+                    "后端当前没有使用虚拟显示（DISPLAY 为空，或 XHS_LOGIN_HEADLESS=true）——"
+                    "投屏里看不到浏览器窗口。请确认后端单元里有 Environment=DISPLAY=:99 "
+                    "（deploy/install-xhs-vnc.sh 会帮你加）并重启后端。"),
+    }
+    _desktop_cache.update({"at": now, "data": data})
+    return dict(data)
+
+
 def diagnostics() -> Dict[str, Any]:
-    """给前端/排错用：环境 + 每个登录会话的现状。"""
     avail = availability()
     return {
         **avail,

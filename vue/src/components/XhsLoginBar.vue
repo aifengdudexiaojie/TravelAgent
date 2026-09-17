@@ -55,6 +55,12 @@ const smsCode = ref('')
 const smsPhone = ref('')
 const smsBusy = ref(false)
 const smsNotice = ref('')
+/** 服务器浏览器投屏（noVNC）：在小框里直接操作服务器上的 Chrome */
+const desk = ref<any>(null)
+const deskFrameUrl = ref('')
+const deskLocalUrl = ref('')
+const deskTunnel = ref('')
+const deskLoading = ref(false)
 /** 缺系统运行库时的"服务器上一键修复"命令（后端装好依赖后为空） */
 const qrInstallHint = ref('')
 const copiedHint = ref('')
@@ -290,6 +296,29 @@ async function resendSmsCode() {
   } finally {
     smsBusy.value = false
   }
+}
+
+/** 准备"投屏"地址：站点域名走 nginx 片段；也给出 SSH 隧道用的本机地址 */
+async function prepareDesktop() {
+  deskLoading.value = true
+  try {
+    const resp = await xhsApi.liveLoginDesktopView()
+    const d = resp.data || {}
+    desk.value = d
+    const origin = window.location.origin
+    const host = window.location.hostname
+    deskFrameUrl.value = `${origin}${d.view_path || ''}`
+    deskLocalUrl.value = `http://localhost:${d.port || 6080}${d.local_path || ''}`
+    deskTunnel.value = `ssh -L ${d.port || 6080}:127.0.0.1:${d.port || 6080} travelagent@${host}`
+  } catch (err: any) {
+    desk.value = { available: false, hint: apiErrorMessage(err, '读取投屏状态失败') }
+  } finally {
+    deskLoading.value = false
+  }
+}
+
+function openDesktopWindow() {
+  if (deskFrameUrl.value) window.open(deskFrameUrl.value, '_blank', 'width=1200,height=820')
 }
 
 async function openQr() {
@@ -710,6 +739,45 @@ onBeforeUnmount(() => {
               <pre v-if="liveScreen.console?.length" class="mt-1 max-h-24 overflow-auto bg-gray-900 text-gray-200 text-[10px] p-2 rounded whitespace-pre-wrap">{{ liveScreen.console.join('\n') }}</pre>
               <p v-if="liveScreen.error" class="mt-1 text-[10px] text-red-600">读取出错：{{ liveScreen.error }}</p>
             </div>
+          </div>
+
+          <!-- 🖥️ 服务器浏览器投屏：直接在这个小框里操作服务器上的 Chrome -->
+          <div v-if="showQr" class="mt-3 w-full rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-[11px] font-medium text-blue-800">
+                🖥️ 也可以直接操作服务器上的浏览器（扫码、短信验证都能自己完成）
+              </span>
+              <button v-if="!desk" @click="prepareDesktop" :disabled="deskLoading"
+                      class="shrink-0 text-[11px] text-blue-700 hover:underline disabled:opacity-50">
+                {{ deskLoading ? '准备中…' : '展开' }}
+              </button>
+            </div>
+
+            <template v-if="desk">
+              <p v-if="desk.hint" class="mt-1 text-[11px] text-amber-800 whitespace-pre-wrap">{{ desk.hint }}</p>
+              <p v-if="desk.warning" class="mt-1 text-[11px] text-amber-800 whitespace-pre-wrap">{{ desk.warning }}</p>
+              <template v-if="desk.available && !desk.warning">
+                <iframe :src="deskFrameUrl" class="mt-2 w-full h-72 rounded border border-blue-200 bg-white"
+                        allow="clipboard-read; clipboard-write"></iframe>
+                <p class="mt-1 text-[10px] text-gray-500">
+                  框里就是服务器上的 Chrome：先点里面的「连接」，然后用小红书 App 扫码；
+                  若要求短信验证码/滑块，直接在这里输入即可。登录成功后状态灯会自动变绿。
+                </p>
+                <div class="mt-1 flex flex-wrap items-center gap-3">
+                  <button @click="openDesktopWindow" class="text-[11px] text-blue-700 hover:underline">在新窗口打开</button>
+                  <button @click="prepareDesktop" class="text-[11px] text-blue-700 hover:underline">重新加载</button>
+                </div>
+                <details class="mt-2">
+                  <summary class="text-[11px] text-gray-500 cursor-pointer">上面这个框打不开？（用 SSH 隧道，零配置）</summary>
+                  <div class="mt-1 text-[11px] text-gray-700">
+                    <p>在你自己的电脑上执行：</p>
+                    <pre class="mt-1 bg-white border border-gray-200 rounded p-2 whitespace-pre-wrap break-all">{{ deskTunnel }}</pre>
+                    <p class="mt-1">然后浏览器打开：</p>
+                    <pre class="mt-1 bg-white border border-gray-200 rounded p-2 whitespace-pre-wrap break-all">{{ deskLocalUrl }}</pre>
+                  </div>
+                </details>
+              </template>
+            </template>
           </div>
 
           <!-- 启动失败的日志尾部（排查用） -->

@@ -11,6 +11,7 @@
     POST /api/xhs/login/code      提交短信验证码（小红书风控要求"短信验证码验证"时用）
     POST /api/xhs/login/send-code 重新发送短信验证码
     GET  /api/xhs/login/debug     排错：看服务器那个浏览器此刻的画面与页面信息
+    GET  /api/xhs/login/desktop-view  服务器浏览器能否投屏（noVNC）过来直接操作
     POST /api/xhs/login/stop      关闭登录浏览器
     POST /api/xhs/clear           退出登录（换号用；会删掉该用户的 cookies）
     POST /api/xhs/cookies         导入 cookies.json（备用方案）
@@ -129,6 +130,18 @@ async def xhs_live_login_debug(shot: int = 1,
     import asyncio
 
     return await asyncio.to_thread(live_login.debug, current_user["user_id"], bool(shot))
+
+
+@router.get("/login/desktop-view")
+async def xhs_live_login_desktop_view(current_user: dict = Depends(get_current_user)):
+    """服务器上的浏览器能否"投屏"过来直接操作（noVNC）。
+
+    小红书登录可能要求短信验证码/滑块等风控步骤，只有人看着真实浏览器才好完成，
+    所以提供这条路：把服务器浏览器画面投到网页里，用户自己点、自己输入。
+    """
+    import asyncio
+
+    return await asyncio.to_thread(live_login.desktop_view)
 
 
 @router.get("/login/available")
