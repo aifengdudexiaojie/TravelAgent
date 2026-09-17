@@ -312,6 +312,8 @@ async function prepareDesktop() {
     const host = window.location.hostname
     const path = deskLite.value ? d.lite_path : d.view_path
     deskFrameUrl.value = `${origin}${path || ''}`
+    deskUsingLocal.value = false
+    deskWrong.value = false
     const localPath = deskLite.value ? d.local_lite_path : d.local_path
     deskLocalUrl.value = `http://localhost:${d.port || 6080}${localPath || ''}`
     deskTunnel.value = `ssh -L ${d.port || 6080}:127.0.0.1:${d.port || 6080} travelagent@${host}`
@@ -335,6 +337,38 @@ function openDesktopWindow() {
 /** 投屏可用且不是无头模式 → 弹窗就用投屏当登录界面 */
 const deskPrimary = computed(() =>
   !!(desk.value?.available && !desk.value?.warning))
+/** 框里加载出来的不是 noVNC，而是本站页面（说明 nginx 没放行 /vnc/，被 SPA 兜底吃掉了） */
+const deskWrong = ref(false)
+const deskUsingLocal = ref(false)
+
+/** iframe 加载完检查内容：是 noVNC 还是"被 SPA 兜底"的本站页面？
+ *  （同源时可以直接读 contentDocument；走 SSH 隧道是跨域，读不到，属于正常情况。） */
+function onDeskFrameLoad(ev: Event) {
+  const frame = ev.target as HTMLIFrameElement
+  try {
+    const doc = frame.contentDocument
+    if (!doc) { deskWrong.value = false; return }
+    const hasCanvas = !!doc.querySelector('canvas, #screen')
+    const looksLikeOurApp = !!doc.querySelector('#app') || /旅行|Travel/i.test(doc.title || '')
+    const isNoVNC = /novnc/i.test(doc.title || '') || hasCanvas
+    deskWrong.value = !isNoVNC && (looksLikeOurApp || !!doc.querySelector('script[src*="/assets/"]'))
+    if (deskWrong.value) {
+      console.warn('[xhs] 投屏框里加载到的是本站页面，nginx 需要放行 /vnc/')
+    }
+  } catch {
+    deskWrong.value = false            // 跨域（SSH 隧道方式）读不到，属正常
+  }
+}
+
+/** 改用本机地址（配合 SSH 隧道，无需改 nginx） */
+async function useLocalDesktop() {
+  const d = desk.value || {}
+  const localPath = deskLite.value ? d.local_lite_path : d.local_path
+  deskUsingLocal.value = true
+  deskWrong.value = false
+  deskFrameUrl.value = `http://localhost:${d.port || 6080}${localPath || ''}`
+  deskLocalUrl.value = deskFrameUrl.value
+}
 
 async function openQr() {
   showQr.value = true
@@ -619,7 +653,33 @@ onBeforeUnmount(() => {
             <span v-if="desk?.display" class="text-[10px] text-gray-400">DISPLAY={{ desk.display }}</span>
           </div>
           <iframe :src="deskFrameUrl" class="w-full rounded-xl border border-gray-200 bg-gray-900"
-                  style="height: 62vh" allow="clipboard-read; clipboard-write"></iframe>
+                  style="height: 62vh" allow="clipboard-read; clipboard-write"
+                  @load="onDeskFrameLoad"></iframe>
+          <!-- 框里加载到的是本站页面：说明 nginx 没放行 /vnc/，被 SPA 兜底路由吃掉了 -->
+          <div v-if="deskWrong" class="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 leading-relaxed">
+            <p class="font-medium">⚠️ 框里显示的是本站页面，不是服务器上的浏览器</p>
+            <p class="mt-1">原因：nginx 把 <code>/vnc/</code> 当成了前端路由，回退到 <code>index.html</code> 了
+              （SPA 的 <code>try_files … /index.html</code> 兜底）。两个解法，任选其一：</p>
+            <p class="mt-2 font-medium">解法 1（不用改 nginx，30 秒）：在自己的电脑上开 SSH 隧道</p>
+            <pre class="mt-1 bg-white/70 border border-amber-200 rounded p-2 whitespace-pre-wrap break-all">{{ deskTunnel }}</pre>
+            <p class="mt-1">开好之后点这里切换到本机地址：</p>
+            <button @click="useLocalDesktop"
+                    class="mt-1 px-3 py-1.5 text-xs rounded-lg bg-amber-600 text-white hover:bg-amber-700">
+              改用本机隧道地址（http://localhost:{{ desk?.port || 6080 }}）
+            </button>
+            <p class="mt-2 font-medium">解法 2（要好看的网址）：把下面片段加进 nginx 的 server { }</p>
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-[10px] text-amber-800">（脚本 install-xhs-vnc.sh 会自动尝试加好）</span>
+              <button @click="copyText(desk?.nginx_snippet || '', 'nginx')" class="shrink-0 text-[11px] text-blue-600 hover:underline">
+                {{ copiedHint === 'nginx' ? '已复制' : '复制片段' }}
+              </button>
+            </div>
+            <pre class="mt-1 max-h-40 overflow-auto bg-white/70 border border-amber-200 rounded p-2 text-[10px] whitespace-pre-wrap">{{ desk?.nginx_snippet }}</pre>
+            <pre class="mt-1 bg-white/70 border border-amber-200 rounded p-2 text-[10px] whitespace-pre-wrap">sudo nginx -t && sudo systemctl reload nginx</pre>
+          </div>
+          <p v-if="deskUsingLocal" class="mt-2 text-[11px] text-green-700">
+            已切到本机隧道地址；如果框里还是空白，请确认 SSH 隧道还开着，然后点「重新连接」。
+          </p>
           <p class="mt-2 text-[11px] text-gray-400">
             框里看不到画面？① 先在框里等 2~3 秒（正在连接）；② 若仍是空白，多半是 nginx 还没放行
             <code>/vnc/</code>，展开下面的「命令行方式」用 SSH 隧道即可。

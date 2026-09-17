@@ -775,6 +775,18 @@ def desktop_view() -> Dict[str, Any]:
         "lite_path": f"/vnc/vnc_lite.html?{lite_q}",
         "local_path": f"/vnc.html?{scale_q}",                    # 走 SSH 隧道时的本机地址
         "local_lite_path": f"/vnc_lite.html?{lite_q}",
+        # 给前端复制的 nginx 片段：站点根路径被 SPA 兜底路由占用时，必须显式放行 /vnc/
+        "nginx_snippet": (
+            "location /vnc/ {\n"
+            "    auth_basic           \"XHS desktop\";\n"
+            "    auth_basic_user_file /etc/nginx/.htpasswd-xhs;\n"
+            "    proxy_pass           http://127.0.0.1:%d/;\n"
+            "    proxy_http_version   1.1;\n"
+            "    proxy_set_header     Upgrade $http_upgrade;\n"
+            "    proxy_set_header     Connection \"upgrade\";\n"
+            "    proxy_read_timeout   3600s;\n"
+            "}\n" % port
+        ),
         "hint": ("" if reachable else
                  "服务器还没装投屏：cd /opt/travelagent && sudo bash deploy/install-xhs-vnc.sh"),
         "warning": ("" if (display and not headless) else

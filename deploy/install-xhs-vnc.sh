@@ -155,7 +155,81 @@ else
   echo "  · 无需修改（已配置或单元文件不存在）"
 fi
 
-echo "== 6. 自检 =="
+echo "== 6. 放行 nginx 的 /vnc/（否则会被前端的 SPA 兜底路由吃掉，框里显示成网站首页） =="
+SNIPPET=/etc/nginx/snippets/xhs-vnc.conf
+if [ -f "$APP_DIR/deploy/nginx-vnc.conf" ]; then
+  as_root mkdir -p /etc/nginx/snippets
+  as_root cp "$APP_DIR/deploy/nginx-vnc.conf" "$SNIPPET"
+  echo "  ✅ 已写入 $SNIPPET"
+else
+  echo "  ⚠️  找不到 $APP_DIR/deploy/nginx-vnc.conf，跳过"
+fi
+
+# 基本认证口令文件（没口令不许进：这后面是一个能操作小红书的真实浏览器）
+HTPASSWD=/etc/nginx/.htpasswd-xhs
+VNC_USER="${XHS_VNC_USER:-admin}"
+if ! as_root test -f "$HTPASSWD"; then
+  VNC_PASS="${XHS_VNC_PASSWORD:-}"
+  if [ -z "$VNC_PASS" ] && [ -f "$APP_DIR/.env" ]; then
+    VNC_PASS=$(grep -E '^LOG_VIEWER_PASSWORD=' "$APP_DIR/.env" | head -1 | cut -d= -f2- || true)
+  fi
+  if [ -z "$VNC_PASS" ]; then
+    VNC_PASS=$(head -c 12 /dev/urandom | base64 | tr -d '/+=' | head -c 12)
+  fi
+  if command -v htpasswd >/dev/null 2>&1; then
+    as_root htpasswd -bc "$HTPASSWD" "$VNC_USER" "$VNC_PASS" >/dev/null 2>&1 \
+      && echo "  ✅ 已创建口令文件：$HTPASSWD（用户名 $VNC_USER，口令 $VNC_PASS）" \
+      || echo "  ⚠️  htpasswd 失败（请检查 apache2-utils 是否安装）"
+  else
+    as_root apt-get install -y --no-install-recommends apache2-utils >/dev/null 2>&1
+    as_root htpasswd -bc "$HTPASSWD" "$VNC_USER" "$VNC_PASS" >/dev/null 2>&1 \
+      && echo "  ✅ 已创建口令文件：$HTPASSWD（用户名 $VNC_USER，口令 $VNC_PASS）" \
+      || echo "  ⚠️  口令文件创建失败，请手动 htpasswd -c $HTPASSWD $VNC_USER"
+  fi
+else
+  echo "  · 口令文件已存在：$HTPASSWD（沿用）"
+fi
+
+# 自动把 include 插进启用中的站点配置（带 nginx -t 校验与回滚）
+if command -v nginx >/dev/null 2>&1 && as_root test -f "$SNIPPET"; then
+  AS_ROOT=""
+  [ "$(id -u)" -ne 0 ] && AS_ROOT="sudo"
+  changed=0
+  for conf in $(as_root ls /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf 2>/dev/null); do
+    as_root grep -q "xhs-vnc.conf" "$conf" 2>/dev/null && continue
+    as_root grep -q "server *{" "$conf" 2>/dev/null || continue
+    as_root cp "$conf" "$conf.bak-xhsvnc"
+    as_root python3 - "$conf" <<'PY'
+import sys, pathlib, re
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+marker = "include /etc/nginx/snippets/xhs-vnc.conf;   # 小红书登录投屏（noVNC）"
+if marker in text:
+    sys.exit(0)
+# 插到第一个 server { 之后
+text = re.sub(r"(server\s*\{)", r"\1\n    " + marker, text, count=1)
+path.write_text(text, encoding="utf-8")
+PY
+    if as_root nginx -t >/dev/null 2>&1; then
+      changed=1
+      echo "  ✅ 已在 $(basename "$conf") 里放行 /vnc/（备份：$(basename "$conf").bak-xhsvnc）"
+    else
+      as_root mv "$conf.bak-xhsvnc" "$conf"
+      echo "  ⚠️  $(basename "$conf") 改完 nginx -t 不通过，已回滚（请手动加 include）"
+    fi
+  done
+  if [ "$changed" = "1" ]; then
+    as_root systemctl reload nginx 2>/dev/null || as_root nginx -s reload 2>/dev/null || true
+    echo "  ✅ 已 reload nginx"
+  elif [ "$changed" = "0" ]; then
+    echo "  · 没有需要改的站点配置（或已经配过）。若访问 /vnc/ 看到的是网站首页，"
+    echo "    请手动把 include /etc/nginx/snippets/xhs-vnc.conf; 加进站点 server { } 并 reload"
+  fi
+else
+  echo "  · 没有 nginx（用 SSH 隧道方式即可，不需要它）"
+fi
+
+echo "== 7. 自检 =="
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$WEB_PORT/vnc.html" || true)
 if [ "$code" = "200" ]; then
   echo "  ✅ noVNC 网页正常（HTTP $code）"
@@ -166,21 +240,17 @@ systemctl is-active --quiet travel-agent-x11vnc && echo "  ✅ x11vnc 在跑" ||
 systemctl is-active --quiet travel-agent-xvfb && echo "  ✅ Xvfb 在跑" || echo "  ⚠️  Xvfb 没起来"
 
 echo
-echo "== 装好了，两种打开方式 =="
+echo "== 完成 =="
+echo "两种打开方式（任选）："
 echo
-echo "方式 A（零配置，先试这个）：在你自己电脑上执行 SSH 隧道"
+echo "方式 A（零配置，推荐先用这个）：在你自己电脑上执行 SSH 隧道"
 echo "    ssh -L $WEB_PORT:127.0.0.1:$WEB_PORT travelagent@<服务器IP>"
 echo "  然后浏览器打开："
 echo "    http://localhost:$WEB_PORT/vnc.html?autoconnect=1&resize=scale&path=websockify"
 echo
-echo "方式 B（直接用站点域名访问）：把下面这行加进你 nginx 站点配置的 server { } 里"
-echo "    include /etc/nginx/snippets/xhs-vnc.conf;"
-echo "  然后（脚本已把片段放好）："
-echo "    sudo cp $APP_DIR/deploy/nginx-vnc.conf /etc/nginx/snippets/xhs-vnc.conf   # 如尚未复制"
-echo "    sudo nginx -t && sudo systemctl reload nginx"
-echo "  之后访问："
+echo "方式 B（站点域名直接访问）："
 echo "    http://<你的站点>/vnc/vnc.html?autoconnect=1&resize=scale&path=websockify"
+echo "  （用户名 $VNC_USER / 口令见上面输出；若显示的是网站首页，说明 /vnc/ 还没被 nginx 放行）"
 echo
-echo "打开后在网页里点「连接」，就能看到服务器上的 Chrome："
-echo "  · 用小红书 App 扫码；如需短信验证码，直接在这个页面里输入即可"
-echo "  · 登录成功后本系统会自动识别并保存登录态（页面上的状态灯会变绿）"
+echo "打开后在画面里用小红书 App 扫码；如需短信验证码/滑块，直接在画面里操作。"
+echo "登录成功后本系统会自动识别并保存登录态（状态灯变绿）。"

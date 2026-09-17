@@ -294,6 +294,9 @@ class DesktopViewTest(unittest.TestCase):
         self.assertIn("path=websockify", data["lite_path"])
         self.assertIn("autoconnect=1", data["view_path"])
         self.assertIn("resize=scale", data["view_path"])
+        # 站点根被 SPA 兜底路由占用时，前端要能把 nginx 片段给用户复制
+        self.assertIn("location /vnc/", data["nginx_snippet"])
+        self.assertIn(f"127.0.0.1:{data['port']}", data["nginx_snippet"])
 
     def test_reports_install_hint_when_unreachable(self):
         with patch("httpx.get", side_effect=RuntimeError("refused")), \
