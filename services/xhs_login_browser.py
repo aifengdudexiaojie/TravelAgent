@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from pathlib import Path
@@ -52,10 +53,14 @@ LOGIN_SEL = ".main-container .user .link-wrapper .channel"      # 出现即"已�
 QR_SEL = ".login-container .qrcode-img"                         # 常规登录二维码
 CAPTCHA_SEL = ".r-captcha-modal .qrcode-img"                    # 二次设备安全验证二维码
 
-# 页面文本里的风控/中间态关键词（实测 2026-09：扫码后会先"扫码成功 请在手机上确认"，
-# 风控触发时再要求"短信验证码验证"，验证码发到绑定手机号上）
+# 页面文本里的风控/中间态关键词。
+#
+# ⚠️ 踩过的坑：这里**绝不能**把"获取验证码"当成短信验证阶段的标志 ——
+# 普通的"手机号登录"表单里就有一个「获取验证码」按钮，一旦把它算进去，
+# 打开登录页的第一眼就会被判定为"要求短信验证"，于是**二维码永远不返回给前端**，
+# 用户看到的就是"扫码那条路根本走不通"。只有下面这些**只属于风控弹窗**的文案才算：
+SMS_HINTS = ("短信验证码验证", "验证码将发送至", "没有收到验证码")
 SCANNED_HINTS = ("扫码成功", "请在手机上确认")
-SMS_HINTS = ("短信验证码", "验证码将发送至", "获取验证码", "没有收到验证码")
 PHONE_RE = re.compile(r"(\+?\d{2,3}[\s-]?\d{3}\*{2,}\d{2,4})")
 
 HEADLESS_ENV = os.getenv("XHS_LOGIN_HEADLESS", "auto").strip().lower()
@@ -64,13 +69,17 @@ HEADLESS_ENV = os.getenv("XHS_LOGIN_HEADLESS", "auto").strip().lower()
 def _resolve_headless() -> bool:
     """有头还是无头。
 
-    `auto`（默认）：有 DISPLAY 就用**有头**（Xvfb 下最接近官方推荐的"桌面登录"路径，
-    也最不容易被风控盯上）；没有 DISPLAY 就退回无头。
-    显式 true/false 则直接照办。
+    `auto`（默认）：
+      · Windows / macOS → **有头**（本机开发时你能直接看到浏览器窗口，扫码/验证码顺手就处理了）；
+      · Linux 有 DISPLAY（Xvfb）→ 有头；
+      · Linux 没 DISPLAY → 无头（否则根本起不来）。
+    也就是说：只有"没有图形界面的 Linux"才无头。
     """
     if HEADLESS_ENV in ("1", "true", "yes", "on"):
         return True
     if HEADLESS_ENV in ("0", "false", "no", "off"):
+        return False
+    if os.name == "nt" or sys.platform == "darwin":
         return False
     return not bool(os.environ.get("DISPLAY"))
 
@@ -268,11 +277,26 @@ class _LiveSession:
 
     # ---------- 浏览器动作 ----------
     async def launch(self) -> None:
+        """启动登录浏览器。
+
+        ⚠️ 用**持久化 profile**（`browser_data/<用户>/chrome-profile`），而不是每次开一个
+        全新的隐身上下文。原因：小红书对"全新设备"的风控明显更严（直接甩短信验证码），
+        而设备身份主要靠 profile 里的 cookie/localStorage 维持。持久化之后：
+          · 同一个用户第二次登录不会被当成新设备；
+          · 登录用的浏览器与之后 MCP 抓取用的是同一套设备特征，更一致。
+        """
         from playwright.async_api import async_playwright
 
         self._pw = await async_playwright().start()
         exe = browser_executable()
         headless = _resolve_headless()
+        profile = self.workdir / "chrome-profile"
+        try:
+            profile.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning("创建 profile 目录失败（改用临时目录）：%s", exc)
+            profile = self.workdir / f"chrome-profile-{int(time.time())}"
+
         kwargs: Dict[str, Any] = {
             "headless": headless,
             "args": [
@@ -281,39 +305,30 @@ class _LiveSession:
                 "--disable-blink-features=AutomationControlled",
                 "--lang=zh-CN",
                 "--window-size=1280,900",
-                # ⚠️ 关键：在 Xvfb 上没有窗口管理器时，Chrome 可能把窗口当成"被遮挡/后台"，
-                #    于是**节流页面 JS**；而小红书登录是靠页面脚本轮询/长连接拿扫码结果的，
-                #    被节流就会表现为"手机已确认、页面永远不动"。这几个 flag 关掉各种节流。
+                # 无头/虚拟显示下别节流页面 JS：小红书登录靠页面脚本拿扫码结果，
+                # 被节流就会表现为"手机已确认、页面永远不动"。
                 "--disable-background-timer-throttling",
                 "--disable-backgrounding-occluded-windows",
                 "--disable-renderer-backgrounding",
                 "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling",
-                "--window-position=0,0",
             ],
+            "user_agent": UA,
+            "locale": "zh-CN",
+            "timezone_id": "Asia/Shanghai",
+            "viewport": {"width": 1280, "height": 860},
         }
         if exe:
             kwargs["executable_path"] = exe
-        self._browser = await self._pw.chromium.launch(**kwargs)
-        logger.info("扫码登录浏览器已启动：user=%s headless=%s exe=%s",
-                    self.user_id, headless, exe or "(playwright 自带)")
-        self._ctx = await self._browser.new_context(
-            user_agent=UA, locale="zh-CN", timezone_id="Asia/Shanghai",
-            viewport={"width": 1280, "height": 900},
-        )
-        existing = load_cookies_for_context(cookie_file(self.workdir))
-        if existing:
-            try:
-                await self._ctx.add_cookies(existing)
-                logger.info("登录浏览器已带上已有 cookies：user=%s n=%d", self.user_id, len(existing))
-            except Exception as exc:
-                logger.warning("带入已有 cookies 失败（忽略）：%s", exc)
-        self._page = await self._ctx.new_page()
+
+        self._ctx = await self._pw.chromium.launch_persistent_context(str(profile), **kwargs)
+        self._ctx.set_default_timeout(30000)
+        logger.info("扫码登录浏览器已启动：user=%s headless=%s profile=%s exe=%s",
+                    self.user_id, headless, profile.name, exe or "(playwright 自带)")
+        self._page = self._ctx.pages[0] if self._ctx.pages else await self._ctx.new_page()
         # 页面的 console / JS 报错也收下来：登录卡住时它们经常是唯一线索
         try:
             self._page.on("console", lambda msg: self._remember_console(f"{msg.type}: {msg.text}"))
             self._page.on("pageerror", lambda exc: self._remember_console(f"pageerror: {exc}"))
-            # 记录加载失败的请求：如果登录回调依赖的请求被子网/代理拦掉，页面就永远
-            # 完不成登录（控制台里只会看到一句 ERR_BLOCKED_BY_CLIENT，看不出是哪个域名）
             self._page.on("requestfailed",
                           lambda req: self._remember_failed(
                               f"{req.url[:160]} → {(req.failure or '失败')}"))
@@ -424,17 +439,12 @@ class _LiveSession:
             self._empty_streak = 0
             return await self._save_and_report_login("登录 cookie 已更新")
 
-        # ② 风控中间态：先"扫码成功，请在手机上确认"，风控触发时再要"短信验证码"。
-        #    这两种状态页面文本里写得很清楚，必须识别出来——否则用户只看到二维码，
-        #    完全不知道服务端其实在等他输短信验证码。
+        # ② 风控中间态：必须先分清"还没扫码"和"已经扫码、在等短信验证码"。
+        #    ⚠️ 关键：页面里同时存在二维码和"手机号登录（含获取验证码）"是很正常的，
+        #    所以**只有命中风控专属文案**才算短信阶段；没扫码前一律先把二维码给用户。
         text = await self._page_text()
-        if any(h in text for h in SMS_HINTS):
-            self._empty_streak = 0
-            phone = self._sms_phone(text)
-            return {"state": "verify_sms", "phone": phone,
-                    "message": (f"小红书要求短信验证：验证码已发到 {phone}，请在下方输入"
-                                if phone else "小红书要求短信验证，请在下方输入收到的验证码"),
-                    "text": re.sub(r"\s+", " ", text)[:300]}
+        scanned = any(h in text for h in SCANNED_HINTS)
+        sms_stage = any(h in text for h in SMS_HINTS)
 
         # ③ 二次设备安全验证：小红书会弹出另一张要扫的码（上游 MCP 不处理这个）
         if await self._count(CAPTCHA_SEL) > 0:
@@ -445,7 +455,37 @@ class _LiveSession:
 
         # ④ 常规登录二维码（实时读取，永远是当前这张）
         src = await self._qr_src(QR_SEL) if await self._count(QR_SEL) > 0 else None
-        if src:
+        if src and not (sms_stage and scanned):
+            # 已扫码但还没触发短信验证 → 继续显示二维码，并提示去手机上确认
+            self._empty_streak = 0
+            # 同一张内容长时间不变 = 页面停在"二维码已失效"那张废码上，重开一次
+            if src != self._last_src:
+                self._last_src, self._last_src_at = src, time.time()
+            elif time.time() - self._last_src_at > QR_STALE_AFTER:
+                logger.info("二维码内容 %ds 未变化，视为已失效，重新打开登录页：user=%s",
+                            int(QR_STALE_AFTER), self.user_id)
+                self._last_src, self._last_src_at = "", time.time()
+                await self._goto_explore()
+                if await self._cookie_login_detected():
+                    return await self._save_and_report_login("重载后登录 cookie 已更新")
+                src = await self._qr_src(QR_SEL) if await self._count(QR_SEL) > 0 else None
+            if src:
+                mime, b64 = self._split_data_url(src)
+                if b64:
+                    return {"state": "qr", "mime": mime or "image/png", "image_base64": b64,
+                            "scanned": scanned,
+                            "message": ("已扫码成功 → 请在手机上点「确认登录」"
+                                        if scanned else
+                                        "请用小红书 App 扫码，并在手机上点「确认登录」")}
+
+        # ⑤ 短信验证阶段（风控专属文案）：把手机号告诉用户，等他把验证码填进来
+        if sms_stage:
+            self._empty_streak = 0
+            phone = self._sms_phone(text)
+            return {"state": "verify_sms", "phone": phone,
+                    "message": (f"小红书要求短信验证：验证码已发到 {phone}，请在下方输入"
+                                if phone else "小红书要求短信验证，请在下方输入收到的验证码"),
+                    "text": re.sub(r"\s+", " ", text)[:300]}
             self._empty_streak = 0
             # 同一张内容长时间不变 = 页面停在"二维码已失效"那张废码上，重开一次
             if src != self._last_src:
@@ -768,6 +808,7 @@ class _LiveSession:
         return await self.probe()
 
     async def close(self) -> None:
+        # 持久化上下文里 ctx 就是"浏览器"，关它就够；self._browser 为 None
         for closer in (getattr(self._ctx, "close", None), getattr(self._browser, "close", None)):
             if closer is None:
                 continue

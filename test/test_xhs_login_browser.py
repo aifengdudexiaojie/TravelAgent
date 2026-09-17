@@ -137,6 +137,40 @@ class SnapshotStateTest(unittest.IsolatedAsyncioTestCase):
                 "手机号登录 +86 获取验证码 短信验证码验证 验证码将发送至 +86 133******32 "
                 "没有收到验证码？获取验证码 验证 问题反馈")
 
+    # ⚠️ 真实登录页的完整文本（2026-09 从线上抓的）。
+    #    它里面有「手机号登录」「获取验证码」——曾经因为把"获取验证码"当成短信阶段标志，
+    #    导致打开登录页就被判定为"要求短信验证"、**二维码永远不返回给前端**，
+    #    用户侧表现就是"扫码那条路完全走不通"。这条用例专门锁死这个回归。
+    NORMAL_LOGIN_TEXT = (
+        "登录后推荐更懂你的笔记 可用 小红书 或 微信 扫码 小红书如何扫码 手机号登录 +86 "
+        "获取验证码 登录 我已阅读并同意《用户协议》《隐私政策》《儿童/青少年个人信息保护规则》 "
+        "新用户可直接登录 创作中心 业务合作 发现 RED 直播 发布 通知 消息 登录 "
+        "沪ICP备13030189号 违法不良信息举报电话：4006676810")
+
+    async def test_normal_login_page_is_not_treated_as_sms_stage(self):
+        """普通登录页（含"手机号登录/获取验证码"）必须给二维码，不能误判成短信验证。"""
+        self._attach({lb.QR_SEL}, {lb.QR_SEL: "data:image/png;base64,REALQR"},
+                     text=self.NORMAL_LOGIN_TEXT)
+        data = await self.session._snapshot()
+        self.assertEqual(data["state"], "qr", "普通登录页被误判成短信验证 → 二维码不会下发")
+        self.assertEqual(data["image_base64"], "REALQR")
+        self.assertFalse(data.get("scanned"))
+
+    async def test_sms_stage_wins_after_scan(self):
+        """已扫码 + 风控要求短信验证 → 这时必须提示输验证码（二维码先让位）。"""
+        self._attach({lb.QR_SEL}, {lb.QR_SEL: "data:image/png;base64,Q"},
+                     text=self.SMS_TEXT)
+        data = await self.session._snapshot()
+        self.assertEqual(data["state"], "verify_sms")
+        self.assertEqual(data["phone"], "+86 133******32")
+
+    async def test_sms_stage_before_scan_still_shows_qr(self):
+        """还没扫码时即使页面上有风控文案，也应先把二维码给用户扫。"""
+        text = self.SMS_TEXT.replace("扫码成功 请在手机上确认 重新扫码 ", "")
+        self._attach({lb.QR_SEL}, {lb.QR_SEL: "data:image/png;base64,Q"}, text=text)
+        data = await self.session._snapshot()
+        self.assertEqual(data["state"], "qr")
+
     async def test_sms_verification_state_is_detected_with_phone(self):
         self._attach({lb.QR_SEL}, {lb.QR_SEL: "data:image/png;base64,Q"}, text=self.SMS_TEXT)
         data = await self.session._snapshot()
@@ -350,14 +384,27 @@ class AvailabilityTest(unittest.TestCase):
         self.assertFalse(info["ok"])
         self.assertIn("playwright", info["reason"])
 
-    def test_headless_auto_follows_display(self):
-        with patch.object(lb, "HEADLESS_ENV", "auto"), patch.dict("os.environ", {}, clear=True):
-            self.assertTrue(lb._resolve_headless())
+    def test_headless_auto_rules(self):
+        """auto 的规则：桌面系统一律有头；Linux 看有没有 DISPLAY；显式值优先。"""
+        # 本机（Windows）有桌面 → 有头（本机开发时你能直接看到并操作浏览器窗口）
         with patch.object(lb, "HEADLESS_ENV", "auto"), \
-             patch.dict("os.environ", {"DISPLAY": ":99"}):
+             patch.dict("os.environ", {}, clear=True), patch.object(lb.os, "name", "nt"):
+            self.assertFalse(lb._resolve_headless())
+        # Linux + DISPLAY（Xvfb）→ 有头
+        with patch.object(lb, "HEADLESS_ENV", "auto"), \
+             patch.dict("os.environ", {"DISPLAY": ":99"}), \
+             patch.object(lb.os, "name", "posix"), patch.object(lb.sys, "platform", "linux"):
             self.assertFalse(lb._resolve_headless(), "有 DISPLAY 时应用有头模式")
+        # Linux 没 DISPLAY → 无头（否则根本起不来）
+        with patch.object(lb, "HEADLESS_ENV", "auto"), \
+             patch.dict("os.environ", {}, clear=True), \
+             patch.object(lb.os, "name", "posix"), patch.object(lb.sys, "platform", "linux"):
+            self.assertTrue(lb._resolve_headless())
+        # 显式覆盖
         with patch.object(lb, "HEADLESS_ENV", "true"):
             self.assertTrue(lb._resolve_headless())
+        with patch.object(lb, "HEADLESS_ENV", "false"):
+            self.assertFalse(lb._resolve_headless())
 
     def test_sessions_are_capped(self):
         class _Live:
