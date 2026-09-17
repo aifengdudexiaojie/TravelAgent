@@ -292,9 +292,36 @@ class SnapshotStateTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session._page.gotos, 0)
 
     def test_session_active_reports_membership(self):
-        with patch.dict(lb._sessions, {"u1": object()}, clear=True):
+        class _Live:
+            def alive(self):
+                return True
+
+            def shutdown(self):
+                pass
+
+        with patch.dict(lb._sessions, {"u1": _Live()}, clear=True):
             self.assertTrue(lb.session_active("u1"))
             self.assertFalse(lb.session_active("u2"))
+
+    def test_dead_session_is_cleaned_up(self):
+        """浏览器被关掉后（用户关弹窗/进程被杀）不应再报 error，而是当作会话已结束。"""
+
+        class _Dead:
+            last_used = time.time()
+            user_id = "u1"
+
+            def alive(self):
+                return False
+
+            def shutdown(self):
+                self.closed = True
+
+        dead = _Dead()
+        with patch.dict(lb._sessions, {"u1": dead}, clear=True):
+            self.assertFalse(lb.session_active("u1"))
+            self.assertNotIn("u1", lb._sessions, "死会话必须被清理掉，前端才能重建")
+            self.assertEqual(lb.probe("u1")["state"], "closed")
+        self.assertTrue(dead.closed)
 
     async def test_page_error_becomes_error_state(self):
         self._attach({lb.QR_SEL}, {})          # 有元素但取不到 src，且不能重开

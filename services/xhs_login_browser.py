@@ -807,6 +807,13 @@ class _LiveSession:
         await self._goto_explore()
         return await self.probe()
 
+    def alive(self) -> bool:
+        """浏览器/页面是否还活着（用户关掉弹窗、进程被杀等都会让它变成 False）。"""
+        try:
+            return self._page is not None and not self._page.is_closed()
+        except Exception:
+            return False
+
     async def close(self) -> None:
         # 持久化上下文里 ctx 就是"浏览器"，关它就够；self._browser 为 None
         for closer in (getattr(self._ctx, "close", None), getattr(self._browser, "close", None)):
@@ -858,10 +865,30 @@ def reap_idle() -> int:
     return killed
 
 
+def _get_live_session(user_id: str) -> Optional["_LiveSession"]:
+    """取该用户的登录会话；如果浏览器已经被关掉/崩溃，顺手清掉并返回 None。
+
+    为什么需要它：用户关掉弹窗（前端会调 /login/stop）或浏览器被杀之后，
+    前端可能还有在途的轮询请求打进来 —— 以前会一路抛
+    "Target page, context or browser has been closed" 并让接口返回 error，
+    看起来像"登录彻底坏了"。现在统一返回 state=closed，前端据此重建会话即可。
+    """
+    with _lock:
+        session = _sessions.get(user_id)
+    if session is None:
+        return None
+    if not session.alive():
+        with _lock:
+            _sessions.pop(user_id, None)
+        logger.info("登录会话的浏览器已关闭，清理会话：user=%s", user_id)
+        session.shutdown()
+        return None
+    return session
+
+
 def session_active(user_id: str) -> bool:
     """该用户是否正在进行"实时扫码登录"（供状态接口判断：进行中就别去打扰 MCP）。"""
-    with _lock:
-        return user_id in _sessions
+    return _get_live_session(user_id) is not None
 
 
 def active_sessions() -> List[Dict[str, Any]]:
@@ -1000,13 +1027,21 @@ def start(user_id: str) -> Dict[str, Any]:
 
 
 def probe(user_id: str, refresh_if_missing: bool = False) -> Dict[str, Any]:
-    with _lock:
-        session = _sessions.get(user_id)
+    session = _get_live_session(user_id)
     if session is None:
         return {"ok": False, "state": "closed",
                 "message": "登录会话已结束，请重新点「登录小红书」"}
-    data = session.submit(session.probe(refresh_if_missing=refresh_if_missing))
-    data["ok"] = data.get("state") in ("qr", "verify", "logged_in", "waiting")
+    try:
+        data = session.submit(session.probe(refresh_if_missing=refresh_if_missing))
+    except Exception as exc:
+        # 浏览器在探测过程中被关掉（用户关弹窗 / 进程退出）→ 清会话，请前端重建
+        logger.info("探测时登录浏览器已不可用，清理会话：user=%s %s", user_id, exc)
+        with _lock:
+            _sessions.pop(user_id, None)
+        session.shutdown()
+        return {"ok": False, "state": "closed",
+                "message": "登录浏览器已关闭，请重新点「登录小红书」"}
+    data["ok"] = data.get("state") in ("qr", "verify", "verify_sms", "logged_in", "waiting")
     if data.get("state") == "logged_in":
         _note_login_success(user_id)
         with _lock:
@@ -1016,22 +1051,34 @@ def probe(user_id: str, refresh_if_missing: bool = False) -> Dict[str, Any]:
 
 
 def refresh(user_id: str) -> Dict[str, Any]:
-    with _lock:
-        session = _sessions.get(user_id)
+    session = _get_live_session(user_id)
     if session is None:
         return start(user_id)
-    data = session.submit(session.refresh())
+    try:
+        data = session.submit(session.refresh())
+    except Exception as exc:
+        logger.info("刷新二维码失败（会话可能已关闭），重建：user=%s %s", user_id, exc)
+        with _lock:
+            _sessions.pop(user_id, None)
+        session.shutdown()
+        return start(user_id)
     data["ok"] = True
     return data
 
 
 def submit_code(user_id: str, code: str) -> Dict[str, Any]:
     """把短信验证码提交进服务器那个浏览器（小红书风控要求时用）。"""
-    with _lock:
-        session = _sessions.get(user_id)
+    session = _get_live_session(user_id)
     if session is None:
         return {"ok": False, "state": "closed", "message": "登录会话已结束，请重新点「登录小红书」"}
-    data = session.submit(session.submit_code(code), timeout=180)
+    try:
+        data = session.submit(session.submit_code(code), timeout=180)
+    except Exception as exc:
+        logger.warning("提交验证码时浏览器不可用：user=%s %s", user_id, exc)
+        with _lock:
+            _sessions.pop(user_id, None)
+        session.shutdown()
+        return {"ok": False, "state": "closed", "message": "登录浏览器已关闭，请重新点「登录小红书」"}
     if data.get("state") == "logged_in":
         _note_login_success(user_id)
         with _lock:
@@ -1042,21 +1089,25 @@ def submit_code(user_id: str, code: str) -> Dict[str, Any]:
 
 def send_code(user_id: str) -> Dict[str, Any]:
     """点「获取验证码」，让短信再发一次。"""
-    with _lock:
-        session = _sessions.get(user_id)
+    session = _get_live_session(user_id)
     if session is None:
         return {"ok": False, "message": "登录会话已结束，请重新点「登录小红书」"}
-    return session.submit(session.send_code(), timeout=60)
+    try:
+        return session.submit(session.send_code(), timeout=60)
+    except Exception as exc:
+        return {"ok": False, "message": f"重新发送失败：{exc}"}
 
 
 def debug(user_id: str, with_shot: bool = True) -> Dict[str, Any]:
     """排错：返回服务器上登录浏览器的画面与页面信息。"""
-    with _lock:
-        session = _sessions.get(user_id)
+    session = _get_live_session(user_id)
     if session is None:
         return {"ok": False, "state": "closed",
                 "message": "没有正在进行的登录会话（请先点「登录小红书」）"}
-    data = session.submit(session.debug_snapshot(with_shot=with_shot), timeout=120)
+    try:
+        data = session.submit(session.debug_snapshot(with_shot=with_shot), timeout=120)
+    except Exception as exc:
+        return {"ok": False, "state": "closed", "message": f"读取画面失败：{exc}"}
     data["ok"] = True
     data["headless"] = _resolve_headless()
     return data

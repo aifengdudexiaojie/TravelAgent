@@ -760,6 +760,12 @@ onBeforeUnmount(() => {
               <p class="text-xs text-red-600 whitespace-pre-wrap">{{ qrError }}</p>
             </div>
 
+            <span v-else-if="liveMode && liveState === 'verify_sms'" class="text-xs text-amber-700 px-6 text-center">
+              小红书要求短信验证码<br />请在下方输入手机收到的验证码
+            </span>
+            <span v-else-if="liveMode && liveState === 'waiting'" class="text-xs text-gray-400 px-6 text-center">
+              正在打开登录页…（稍等 2~5 秒）
+            </span>
             <span v-else class="text-xs text-gray-400 px-4 text-center">点击下方「刷新二维码」获取</span>
           </div>
 
