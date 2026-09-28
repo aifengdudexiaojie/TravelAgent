@@ -34,6 +34,10 @@ __pycache__/
 #    新增类似规则时请一律写成 `/xxx/`，并用 `python check_repo.py` 复查。
 /build/
 /dist/
+# 登录助手的打包产物（约 8.8MB 的 exe）：不进仓库，服务器上单独放即可
+# 本地打包后 scp 到服务器的 tools/dist/，网页上的「下载助手」按钮就会提供它
+/tools/dist/
+/tools/*.exe
 /develop-eggs/
 /downloads/
 /eggs/
