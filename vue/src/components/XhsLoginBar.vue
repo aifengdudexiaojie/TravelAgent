@@ -64,6 +64,10 @@ const deskLoading = ref(false)
 const deskLite = ref(false)          // true=纯净画面（vnc_lite），false=带缩放的自适应画面
 /** 投屏可用时，二维码方式收进折叠区（默认不展开） */
 const showQrFallback = ref(false)
+/** 备用：导入登录态（粘贴 cookies JSON），给扫码走不通的账号用 */
+const showImport = ref(false)
+const importText = ref('')
+const importNotice = ref('')
 /** 缺系统运行库时的"服务器上一键修复"命令（后端装好依赖后为空） */
 const qrInstallHint = ref('')
 const copiedHint = ref('')
@@ -245,6 +249,29 @@ async function probeLive() {
   } catch (err: any) {
     liveNote.value = apiErrorMessage(err, '登录状态探测失败')
     return true
+  }
+}
+
+/** 提交粘贴的登录态（备用路径：用户在自己浏览器登录后导出的 cookies JSON） */
+async function submitPastedCookies() {
+  const text = importText.value.trim()
+  if (!text) { importNotice.value = '请先粘贴导出的 cookies JSON'; return }
+  importing.value = true
+  importNotice.value = ''
+  try {
+    const resp = await xhsApi.importCookies(text)
+    if (resp.data?.ok) {
+      importNotice.value = resp.data.message || '登录态已导入'
+      importText.value = ''
+      await refresh()
+      if (loggedIn.value) { showQr.value = false; notice.value = '已用导入的登录态登录' }
+    } else {
+      importNotice.value = resp.data?.message || '导入失败：内容不是合法的 cookies JSON'
+    }
+  } catch (err: any) {
+    importNotice.value = apiErrorMessage(err, '导入失败')
+  } finally {
+    importing.value = false
   }
 }
 
@@ -924,6 +951,35 @@ onBeforeUnmount(() => {
             {{ showLogTail ? '收起实例日志' : '查看实例日志（排查用）' }}
           </button>
           <pre v-if="showLogTail" class="mt-1 max-h-40 overflow-auto bg-gray-900 text-gray-200 text-[10px] p-2 rounded-lg whitespace-pre-wrap">{{ qrLogTail }}</pre>
+        </div>
+
+        <!-- 备用：导入登录态（扫码被风控拦住的账号用这个） -->
+        <div class="mt-4 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+          <button @click="showImport = !showImport" class="text-[11px] text-blue-600 hover:underline">
+            {{ showImport ? '收起' : '扫码登不上？（被小红书风控拦住时）用导入登录态' }}
+          </button>
+          <div v-if="showImport" class="mt-2 text-[11px] text-gray-700 leading-relaxed">
+            <p class="font-medium">三步搞定（登录发生在你自己的设备上，不触发云端的风控）</p>
+            <p class="mt-1">① 用你自己的浏览器打开 <b>xiaohongshu.com</b> 并正常登录（该发短信验证码就正常收，跟本系统无关）</p>
+            <p>② 装一个 cookie 导出扩展（例如 Chrome 的 <b>Cookie-Editor</b>），在 xiaohongshu.com 页面点它 → <b>Export → JSON</b>（会复制到剪贴板）</p>
+            <p>③ 粘贴到下面这个框里提交即可</p>
+            <textarea v-model="importText" rows="3" placeholder="把导出的 cookies JSON 粘贴到这里"
+                      class="mt-2 w-full px-2 py-1.5 text-[11px] rounded-lg border border-gray-300 bg-white font-mono"></textarea>
+            <div class="mt-2 flex items-center gap-2">
+              <button @click="submitPastedCookies" :disabled="importing"
+                      class="px-3 py-1.5 text-xs rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
+                {{ importing ? '提交中…' : '提交登录态' }}
+              </button>
+              <button @click="fileInput?.click()" :disabled="importing"
+                      class="px-3 py-1.5 text-xs rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+                或选择 cookies.json 文件
+              </button>
+            </div>
+            <p v-if="importNotice" class="mt-1 text-[11px] text-amber-800">{{ importNotice }}</p>
+            <p class="mt-1 text-[10px] text-gray-400">
+              说明：登录态只写进你自己的账号目录（权限 600），不会给其他用户用；导出的内容含登录凭据，请勿发给别人。
+            </p>
+          </div>
         </div>
 
         <div class="mt-4 flex flex-wrap items-center gap-2 justify-center">
