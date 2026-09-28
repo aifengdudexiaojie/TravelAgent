@@ -141,6 +141,8 @@ sudo systemctl restart travel-agent-api
 | 二维码一直在刷新，手机上确认了却仍不变绿 | 手机确认的一瞬间弹窗会短暂消失——此时若急着重载就会**打断这次登录**。现在默认"连续 15 秒都没有二维码"才重载，并以 **web_session 换新**作为成功判据 | 确认后**不要**点刷新，等 5~10 秒 |
 | 提示"无头模式下启动失败" | 没有 DISPLAY 且无头启动失败 | 跑安装脚本（建 Xvfb），或查 `deploy/install-xhs-login.sh --check` |
 | MCP 备用方案下扫码没反应 | 上游只截一张码、也不处理二次验证 | 用推荐路径（实时扫码）；确实装不了环境时见第六节 cookies 导入 |
+| **Windows 杀软报毒 `%TEMP%\leakless-amd64-*\leakless.exe`** | 这是 **go-rod** 的辅助程序，被**打包在 `xiaohongshu-mcp` 里**（二进制里含 39 处 `leakless`、2639 处 `go-rod`），运行 MCP 时释放，作用是"父进程退出时把浏览器一起杀掉"。它与本项目代码无关（我们代码里 0 处引用） | 属于**误报**：给 `%TEMP%\leakless-amd64-*` 和 `xiaohongshu-mcp-*.exe` 加白名单即可；不加白名单则 MCP 拉起浏览器可能失败、或留下僵尸 Chrome |
+| 运行登录助手时杀软提示 `%TEMP%\_MEIxxxxxx` | 助手是 PyInstaller `--onefile` 打的，运行时会把内容解压到临时目录（这是该模式的固有行为） | 加白名单，或改用 `--onedir` 方式重新打包（不解压到 temp，目录形式分发） |
 
 我们这边为此修掉的三个隐患（都会造成"扫码后无反应"）：
 
