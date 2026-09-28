@@ -358,6 +358,10 @@ export const xhsApi = {
   liveLoginStop(): Promise<AxiosResponse> {
     return http.post('/xhs/login/stop')
   },
+  /** 生成「登录助手」配对码（本机登录一次，把登录态同步给服务器；10 分钟一次性） */
+  pair(): Promise<AxiosResponse> {
+    return http.post('/xhs/pair')
+  },
   /** 服务器浏览器能否"投屏"过来直接操作（noVNC）：拿到地址由前端拼站点域名 */
   liveLoginDesktopView(): Promise<AxiosResponse> {
     return http.get('/xhs/login/desktop-view')

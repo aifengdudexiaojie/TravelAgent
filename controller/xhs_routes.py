@@ -13,6 +13,8 @@
     GET  /api/xhs/login/debug     排错：看服务器那个浏览器此刻的画面与页面信息
     GET  /api/xhs/login/desktop-view  服务器浏览器能否投屏（noVNC）过来直接操作
     POST /api/xhs/login/stop      关闭登录浏览器
+    POST /api/xhs/pair            生成"登录助手"配对码（用户在自己电脑上登录后同步登录态）
+    POST /api/xhs/pair/upload     **无需登录态**：本机助手带配对码把 cookies 传上来
     POST /api/xhs/clear           退出登录（换号用；会删掉该用户的 cookies）
     POST /api/xhs/cookies         导入 cookies.json（备用方案）
     POST /api/xhs/login/desktop   桌面环境备用：拉起登录程序弹浏览器扫码
@@ -23,11 +25,11 @@
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from auth import get_current_user
-from services import xhs_manager
+from services import xhs_manager, xhs_pairing
 from services import xhs_login_browser as live_login
 
 logger = logging.getLogger("controller.xhs")
@@ -43,6 +45,12 @@ class CookiesPayload(BaseModel):
 class SmsCodePayload(BaseModel):
     """小红书风控要求的短信验证码。"""
     code: str
+
+
+class PairUploadPayload(BaseModel):
+    """本机登录助手提交的内容：配对码 + cookies JSON。"""
+    code: str
+    cookies: str
 
 
 @router.get("/status")
@@ -165,6 +173,40 @@ async def xhs_qrcode(refresh: int = 0,
 
     return await asyncio.to_thread(xhs_manager.login_qrcode,
                                    current_user["user_id"], bool(refresh))
+
+
+@router.post("/pair")
+async def xhs_pair_issue(current_user: dict = Depends(get_current_user)):
+    """生成「登录助手」配对码（10 分钟、一次性）。
+
+    用法：用户在自己电脑上跑登录助手 → 弹出浏览器正常登录小红书（自己的设备/IP，
+    不触发云端风控）→ 助手凭这个码把登录态交给服务器。
+    """
+    import asyncio
+
+    return await asyncio.to_thread(xhs_pairing.issue, current_user["user_id"])
+
+
+@router.post("/pair/upload")
+async def xhs_pair_upload(payload: PairUploadPayload, request: Request):
+    """本机登录助手提交登录态（**无需 JWT**：配对码就是凭据，一次性、10 分钟过期）。"""
+    import asyncio
+
+    ip = (request.client.host if request.client else "") or "-"
+    if xhs_pairing.too_many_fails(ip):
+        return {"ok": False, "message": "配对码尝试次数过多，请稍后再试或重新生成配对码"}
+
+    user_id = await asyncio.to_thread(xhs_pairing.consume, payload.code, ip)
+    if not user_id:
+        return {"ok": False, "message": "配对码无效或已过期，请在网页上重新生成"}
+
+    result = await asyncio.to_thread(xhs_manager.import_cookies, user_id, payload.cookies)
+    if result.get("ok"):
+        result["message"] = "登录态已同步到服务器：" + (result.get("message") or "")
+        logger.info("登录助手同步成功：user=%s bytes=%s", user_id, result.get("bytes"))
+    else:
+        result["message"] = "同步失败：" + (result.get("message") or "内容不合法")
+    return result
 
 
 @router.post("/clear")

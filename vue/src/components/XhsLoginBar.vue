@@ -66,6 +66,13 @@ const deskLite = ref(false)          // true=纯净画面（vnc_lite），false=
 const showQrFallback = ref(false)
 /** 备用：导入登录态（粘贴 cookies JSON），给扫码走不通的账号用 */
 const showImport = ref(false)
+/** 登录助手：本机登录一次，把登录态同步到服务器（配对码 10 分钟、一次性） */
+const showHelper = ref(false)
+const pairCode = ref('')
+const pairLeft = ref(0)
+const pairBusy = ref(false)
+const pairNotice = ref('')
+let pairTimer: number | null = null
 const importText = ref('')
 const importNotice = ref('')
 /** 缺系统运行库时的"服务器上一键修复"命令（后端装好依赖后为空） */
@@ -272,6 +279,32 @@ async function submitPastedCookies() {
     importNotice.value = apiErrorMessage(err, '导入失败')
   } finally {
     importing.value = false
+  }
+}
+
+/** 生成「登录助手」配对码 */
+async function generatePairCode() {
+  pairBusy.value = true
+  pairNotice.value = ''
+  try {
+    const resp = await xhsApi.pair()
+    pairCode.value = resp.data?.code || ''
+    pairLeft.value = resp.data?.expires_in || 600
+    pairNotice.value = '把上面的配对码填进登录助手（一次性，10 分钟内有效）'
+    if (pairTimer !== null) window.clearInterval(pairTimer)
+    pairTimer = window.setInterval(() => {
+      pairLeft.value -= 1
+      if (pairLeft.value <= 0) {
+        pairCode.value = ''
+        pairNotice.value = '配对码已过期，请重新生成'
+        if (pairTimer !== null) window.clearInterval(pairTimer)
+        pairTimer = null
+      }
+    }, 1000)
+  } catch (err: any) {
+    pairNotice.value = apiErrorMessage(err, '生成配对码失败')
+  } finally {
+    pairBusy.value = false
   }
 }
 
@@ -951,6 +984,35 @@ onBeforeUnmount(() => {
             {{ showLogTail ? '收起实例日志' : '查看实例日志（排查用）' }}
           </button>
           <pre v-if="showLogTail" class="mt-1 max-h-40 overflow-auto bg-gray-900 text-gray-200 text-[10px] p-2 rounded-lg whitespace-pre-wrap">{{ qrLogTail }}</pre>
+        </div>
+
+        <!-- 登录助手：本机登录一次，最省心（也不触发云端风控） -->
+        <div class="mt-3 w-full rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+          <button @click="showHelper = !showHelper" class="text-[11px] text-blue-700 hover:underline">
+            {{ showHelper ? '收起' : '登不上小红书？（被风控拦住）用「登录助手」在本机登录一次' }}
+          </button>
+          <div v-if="showHelper" class="mt-2 text-[11px] text-gray-700 leading-relaxed">
+            <p>
+              原理：<b>登录发生在你自己的电脑上</b>（正常登录、该收短信就正常收），
+              助手把登录态同步给服务器 —— 服务器不再直接登录小红书，因此不会触发云端风控。
+            </p>
+            <p class="mt-1">① 运行 <b>小红书登录助手</b>（Windows: <code>xhs-login-helper.exe</code>；
+              也可以用 Python 跑仓库里的 <code>tools/xhs_login_helper.py</code>，需 <code>pip install websockets</code>）</p>
+            <p>② 在本页点下面按钮生成<b>配对码</b>，填进助手（助手还会问服务器地址，就是本站地址）</p>
+            <p>③ 助手会弹出一个浏览器窗口 → 你正常登录小红书 → 助手自动同步 → 本页状态灯变绿</p>
+            <div class="mt-2 flex flex-wrap items-center gap-3">
+              <button @click="generatePairCode" :disabled="pairBusy"
+                      class="px-3 py-1.5 text-xs rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
+                {{ pairBusy ? '生成中…' : '生成配对码' }}
+              </button>
+              <span v-if="pairCode" class="font-mono text-lg tracking-[0.3em] text-gray-800">{{ pairCode }}</span>
+              <span v-if="pairLeft > 0" class="text-[10px] text-gray-500">{{ pairLeft }} 秒后过期</span>
+            </div>
+            <p v-if="pairNotice" class="mt-1 text-[11px] text-amber-800">{{ pairNotice }}</p>
+            <p class="mt-1 text-[10px] text-gray-400">
+              配对码一次性、10 分钟有效；重新生成会让旧码失效。助手只在你的电脑上运行，不上传其他任何东西。
+            </p>
+          </div>
         </div>
 
         <!-- 备用：导入登录态（扫码被风控拦住的账号用这个） -->
