@@ -24,8 +24,10 @@
 """
 
 import logging
+import os
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from auth import get_current_user
@@ -207,6 +209,41 @@ async def xhs_pair_upload(payload: PairUploadPayload, request: Request):
     else:
         result["message"] = "同步失败：" + (result.get("message") or "内容不合法")
     return result
+
+
+@router.get("/helper/download")
+async def xhs_helper_download():
+    """下载「小红书登录助手」（**公开**：这是客户端小工具，不含任何密钥）。
+
+    用户在自己电脑上跑一次这个小工具就能完成登录（登录发生在用户自己的设备上，
+    不触发云端风控）。打包方式见 tools/README.md，产物放到以下任一位置即可：
+      · tools/dist/xhs-login-helper.exe
+      · tools/xhs-login-helper.exe
+      · static/xhs-login-helper.exe
+    也支持用 XHS_HELPER_EXE 指定路径。
+
+    （不做鉴权的原因：下载用 <a> 标签，浏览器不会带 Authorization 头；
+      而文件本身是公开的客户端程序，不含凭据，鉴权带来的复杂度大于收益。）
+    """
+    from pathlib import Path as _Path
+
+    from fastapi.responses import FileResponse
+
+    root = _Path(__file__).resolve().parent.parent
+    candidates = [
+        _Path(os.getenv("XHS_HELPER_EXE", "")) if os.getenv("XHS_HELPER_EXE") else None,
+        root / "tools" / "dist" / "xhs-login-helper.exe",
+        root / "tools" / "xhs-login-helper.exe",
+        root / "static" / "xhs-login-helper.exe",
+    ]
+    for path in candidates:
+        if path and path.exists():
+            return FileResponse(str(path), filename="xhs-login-helper.exe",
+                                media_type="application/octet-stream")
+    return JSONResponse({"ok": False, "message":
+                         "服务器上还没有放助手文件：把打包好的 xhs-login-helper.exe 放到 "
+                         "tools/dist/（或设 XHS_HELPER_EXE 指向它）。打包命令见 tools/README.md"},
+                        status_code=404)
 
 
 @router.post("/clear")

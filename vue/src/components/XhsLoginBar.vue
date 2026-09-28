@@ -282,6 +282,9 @@ async function submitPastedCookies() {
   }
 }
 
+/** 助手下载地址（公开路径：客户端小工具不含密钥，<a> 下载也就无需带认证头） */
+const helperDownloadUrl = '/api/xhs/helper/download'
+
 /** 生成「登录助手」配对码 */
 async function generatePairCode() {
   pairBusy.value = true
@@ -996,8 +999,12 @@ onBeforeUnmount(() => {
               原理：<b>登录发生在你自己的电脑上</b>（正常登录、该收短信就正常收），
               助手把登录态同步给服务器 —— 服务器不再直接登录小红书，因此不会触发云端风控。
             </p>
-            <p class="mt-1">① 运行 <b>小红书登录助手</b>（Windows: <code>xhs-login-helper.exe</code>；
-              也可以用 Python 跑仓库里的 <code>tools/xhs_login_helper.py</code>，需 <code>pip install websockets</code>）</p>
+            <p class="mt-1">
+              ① 下载并运行 <b>小红书登录助手</b>：
+              <a :href="helperDownloadUrl" class="text-blue-700 underline">下载 xhs-login-helper.exe</a>
+              <span class="text-gray-500">（Windows；也可用 Python 跑仓库里的
+              <code>tools/xhs_login_helper.py</code>，需 <code>pip install websockets</code>）</span>
+            </p>
             <p>② 在本页点下面按钮生成<b>配对码</b>，填进助手（助手还会问服务器地址，就是本站地址）</p>
             <p>③ 助手会弹出一个浏览器窗口 → 你正常登录小红书 → 助手自动同步 → 本页状态灯变绿</p>
             <div class="mt-2 flex flex-wrap items-center gap-3">
