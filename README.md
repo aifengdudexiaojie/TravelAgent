@@ -324,3 +324,7 @@ git add -A && git commit -m "..." && git push
 | `xiaohongshumcp/` | 已被忽略（两个 20MB+ exe + `cookies.json` 登录凭据） |
 | `.venv/`、`node_modules/` | 已被忽略（本机 `.venv` 173MB） |
 | `.gitignore` 里的 `/_*.py` | 只忽略根目录的临时调试脚本；**不要**写成 `_*.py`，否则会连 `__init__.py` 一起忽略，新克隆会 import 失败（已用 `!**/__init__.py` 兜底） |
+
+### 项目地址
+
+http://124.222.174.240/
